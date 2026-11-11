@@ -1,0 +1,250 @@
+"""Headless tests of the TUI: real key presses through a pipe, scripted model."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+
+from agents import set_tracing_disabled
+from agents.testing import ScriptedModel, assistant_message, function_call
+from openai import OpenAIError
+from prompt_toolkit.application import create_app_session
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
+
+from code_agent.session import Session
+from code_agent.skills import discover_skills
+from code_agent.tui import Tui
+
+set_tracing_disabled(True)
+
+ENTER, ESC, UP, DOWN, TAB, CTRL_C, CTRL_D = "\r", "\x1b", "\x1b[A", "\x1b[B", "\t", "\x03", "\x04"
+SHIFT_TAB, ALT_ENTER = "\x1b[Z", "\x1b\r"
+
+
+class Harness:
+    def __init__(self, tui: Tui, pipe) -> None:
+        self.tui = tui
+        self.pipe = pipe
+
+    def send(self, keys: str) -> None:
+        self.pipe.send_text(keys)
+
+    @property
+    def text(self) -> str:
+        return "\n".join(self.tui.transcript)
+
+    async def until(self, condition, timeout: float = 5.0) -> None:
+        deadline = time.monotonic() + timeout
+        while not condition():
+            assert time.monotonic() < deadline, f"timed out; transcript:\n{self.text}"
+            await asyncio.sleep(0.01)
+
+    async def idle(self) -> None:
+        """Wait until submitted input has been fully processed."""
+        await asyncio.sleep(0.05)
+        await self.until(lambda: not self.tui.busy and not self.tui._queue)
+        await asyncio.sleep(0.05)
+
+
+def run_tui(tmp_path, steps, scenario, **session_kwargs):
+    """Start the TUI, run `scenario(harness)` against it, then quit."""
+
+    async def main():
+        with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+            session = Session(tmp_path, model=ScriptedModel(steps), **session_kwargs)
+            tui = Tui(session)
+            tui.approval_grace = 0.0
+            harness = Harness(tui, pipe)
+            app = asyncio.ensure_future(tui.run())
+            await harness.until(lambda: tui.app.is_running)
+            try:
+                await scenario(harness)
+            finally:
+                if not app.done():
+                    tui.app.exit()
+                await app
+            return harness
+
+    return asyncio.run(main())
+
+
+def test_message_is_streamed_into_the_transcript(tmp_path):
+    async def scenario(h: Harness):
+        h.send("hello there" + ENTER)
+        await h.idle()
+
+    h = run_tui(tmp_path, [[assistant_message("Hi!\n\nSecond *paragraph*.")]], scenario)
+
+    assert "Code Agent" in h.tui.transcript[0]
+    assert "> hello there" in h.text
+    assert "● Hi!" in h.text and "Second paragraph." in h.text
+    assert h.tui.input.text == ""
+
+
+def test_approval_dialog_yes_no_and_always(tmp_path):
+    steps = [
+        [function_call("write_file", {"path": "a.txt", "content": "1"}, call_id="c1")],
+        [function_call("write_file", {"path": "b.txt", "content": "2"}, call_id="c2")],
+        [function_call("write_file", {"path": "c.txt", "content": "3"}, call_id="c3")],
+        [function_call("write_file", {"path": "d.txt", "content": "4"}, call_id="c4")],
+        [assistant_message("done")],
+    ]
+
+    async def scenario(h: Harness):
+        tui = h.tui
+        h.send("write files" + ENTER)
+        await h.until(lambda: tui._approval is not None)
+        dialog = "".join(text for _style, text in tui._approval_text())
+        assert "Write(a.txt)" in dialog and "❯ 1. 是" in dialog
+        h.send("typed text is swallowed")
+        h.send(ENTER)  # 1. yes
+        await h.until(lambda: (tmp_path / "a.txt").exists())
+
+        await h.until(lambda: tui._approval is not None)
+        h.send(ESC)  # no
+        await h.until(lambda: "rejected" in h.text)
+
+        await h.until(lambda: tui._approval is not None)
+        h.send(DOWN + ENTER)  # 2. always
+        await h.idle()  # d.txt is then written without asking
+
+    h = run_tui(tmp_path, steps, scenario)
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt", "c.txt", "d.txt"]
+    assert h.tui.session.context.always_allowed == {"write_file"}
+    assert h.tui.input.text == ""
+    assert "● Write(a.txt)" in h.text and "+1" in h.text and "done" in h.text
+
+
+def test_type_ahead_cannot_approve(tmp_path):
+    steps = [
+        [function_call("write_file", {"path": "a.txt", "content": "1"}, call_id="c1")],
+        [assistant_message("done")],
+    ]
+
+    async def scenario(h: Harness):
+        tui = h.tui
+        tui.approval_grace = 60.0
+        h.send("go" + ENTER)
+        await h.until(lambda: tui._approval is not None)
+        h.send(ENTER + "1" + "2")
+        await asyncio.sleep(0.2)
+        assert tui._approval is not None and not (tmp_path / "a.txt").exists()
+        tui.approval_grace = 0.0
+        h.send("3")
+        await h.idle()
+
+    run_tui(tmp_path, steps, scenario)
+    assert not (tmp_path / "a.txt").exists()
+
+
+def test_escape_interrupts_and_the_conversation_continues(tmp_path):
+    steps = [
+        [function_call("run_shell", {"command": "sleep 30"}, call_id="c1")],
+        [assistant_message("never shown")],
+    ]
+
+    async def scenario(h: Harness):
+        tui = h.tui
+        h.send("go" + ENTER)
+        await h.until(lambda: "Bash(sleep 30)" in h.text)
+        await asyncio.sleep(0.2)
+        h.send("queued while busy" + ENTER)
+        await h.until(lambda: list(tui._queue) == ["queued while busy"])
+        started = time.monotonic()
+        h.send(ESC)
+        await h.until(lambda: "已中断" in h.text)
+        assert time.monotonic() - started < 3
+        await h.idle()
+
+    h = run_tui(tmp_path, steps, scenario, auto_approve=True)
+
+    assert h.text.index("已中断") < h.text.index("> queued while busy")
+    assert "never shown" in h.text  # the queued message ran as the next turn
+    sent = h.tui.session.agent.model.last_call.input
+    assert [i["content"] for i in sent if i.get("role") == "user"] == [
+        "go",
+        "[Request interrupted by user]",
+        "queued while busy",
+    ]
+
+
+def test_slash_menu_commands_and_skills(tmp_path):
+    skill_dir = tmp_path / ".agents/skills/review"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\ndescription: review code\n---\nDo the review.")
+    skills = discover_skills(tmp_path, tmp_path / "home")
+
+    async def scenario(h: Harness):
+        tui = h.tui
+        h.send("/")
+        await h.until(lambda: len(tui._menu()) == 8)
+        menu = "".join(text for _style, text in tui._menu_text())
+        assert "/help" in menu and "/review" in menu and "review code" in menu
+
+        h.send("m" + DOWN + ENTER)  # /model, /mcp -> second entry runs immediately
+        await h.until(lambda: "没有已连接的 MCP 服务器" in h.text)
+
+        h.send("/mo" + TAB)  # completes and waits for an argument
+        await h.until(lambda: tui.input.text == "/model ")
+        h.send("gpt-x" + ENTER)
+        await h.until(lambda: tui.session.model == "gpt-x")
+        use_scripted_model(tui.session)
+
+        h.send("/rev" + ENTER)  # skills take an argument: Enter completes first
+        await h.until(lambda: tui.input.text == "/review ")
+        h.send("auth.py" + ENTER)
+        await h.idle()
+
+        h.send(SHIFT_TAB)
+        await h.until(lambda: tui.session.context.auto_approve)
+        h.send("line one" + ALT_ENTER + "line two")
+        await h.until(lambda: tui.input.text == "line one\nline two")
+        h.send(CTRL_C)  # clears the input
+        await h.until(lambda: tui.input.text == "")
+        h.send("/exit" + ENTER)
+        await h.until(lambda: not tui.app.is_running)
+
+    model = ScriptedModel([[assistant_message("reviewed")]])
+
+    def use_scripted_model(session: Session) -> None:
+        session.model = model
+        session.agent = session._build_agent()
+
+    h = run_tui(tmp_path, [], scenario, skills=skills)
+
+    assert "> /review auth.py" in h.text and "reviewed" in h.text
+    prompt = model.last_call.input[-1]["content"]
+    assert "Do the review." in prompt and prompt.endswith("Request: auth.py")
+
+
+def test_ctrl_c_twice_and_ctrl_d_exit(tmp_path):
+    async def twice(h: Harness):
+        h.send(CTRL_C)
+        await asyncio.sleep(0.1)
+        assert h.tui.app.is_running
+        assert "再按一次" in "".join(text for _style, text in h.tui._footer_text())
+        h.send(CTRL_C)
+        await h.until(lambda: not h.tui.app.is_running)
+
+    async def ctrl_d(h: Harness):
+        h.send(CTRL_D)
+        await h.until(lambda: not h.tui.app.is_running)
+
+    run_tui(tmp_path, [], twice)
+    run_tui(tmp_path, [], ctrl_d)
+
+
+def test_api_errors_are_shown_and_the_ui_survives(tmp_path):
+    error = OpenAIError("connection refused")
+
+    async def scenario(h: Harness):
+        h.send("one" + ENTER)
+        await h.until(lambda: "出错" in h.text)
+        await h.idle()
+        h.send("two" + ENTER)
+        await h.idle()
+
+    h = run_tui(tmp_path, [error, [assistant_message("recovered")]], scenario)
+    assert "OpenAIError: connection refused" in h.text and "recovered" in h.text

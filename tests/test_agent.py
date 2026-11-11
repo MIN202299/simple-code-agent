@@ -11,19 +11,20 @@ from agents import set_tracing_disabled
 from agents.testing import ScriptedModel, assistant_message, function_call
 from rich.console import Console
 
-from code_agent.cli import Session, format_call, format_output
+from code_agent.render import call_title, render_output, split_blocks
+from code_agent.session import PlainUI, Session, complete_history
 
 set_tracing_disabled(True)
 
 
 def make_session(tmp_path, steps, approver=None, auto_approve=False):
     out = io.StringIO()
+    console = Console(file=out, force_terminal=False, width=200)
     session = Session(
         tmp_path,
         model=ScriptedModel(steps),
         auto_approve=auto_approve,
-        console=Console(file=out, force_terminal=False, width=200),
-        approver=approver,
+        ui=PlainUI(console, approver),
     )
     return session, out
 
@@ -64,7 +65,7 @@ def test_read_only_tools_run_without_approval(tmp_path):
     assert glob == "a.py"
     assert listing == "a.py"
     printed = out.getvalue()
-    assert "read_file(path=a.py)" in printed
+    assert "● Read(a.py)" in printed and "Read 2 lines" in printed
     assert "done reading" in printed
 
 
@@ -209,10 +210,100 @@ def test_edit_replace_all_and_read_paging(tmp_path):
     assert "offset=5" in page
 
 
-def test_formatting_helpers():
-    assert format_call("run_shell", '{"command": "ls\\n-la"}') == "run_shell(command=ls\\n-la)"
-    assert format_call("t", "not json") == "t(arguments=not json)"
-    out = format_output("\n".join(str(i) for i in range(10)))
-    assert out.startswith("  ⎿ 0") and "+4 行" in out
-    assert format_output({"type": "text", "text": "HI"}) == "  ⎿ HI"
-    assert format_output([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]) == "  ⎿ a\n    b"
+def plain(renderable) -> str:
+    out = io.StringIO()
+    Console(file=out, force_terminal=False, width=200).print(renderable)
+    return out.getvalue().rstrip("\n")
+
+
+def test_call_titles():
+    assert call_title("run_shell", {"command": "pytest -q\nls"}) == "Bash(pytest -q)"
+    assert call_title("edit_file", {"path": "a.py", "old_string": "x"}) == "Update(a.py)"
+    assert call_title("list_dir", {}) == "List(.)"
+    assert call_title("update_plan", {"steps": []}) == "Update Todos"
+    assert call_title("shout", {"text": "hi", "n": 2}) == "shout(text=hi, n=2)"
+
+
+def test_output_rendering():
+    long = "\n".join(str(i) for i in range(10))
+    assert plain(render_output("run_shell", {}, long)).splitlines()[0] == "  ⎿  0"
+    assert "… +4 行" in plain(render_output("run_shell", {}, long))
+    assert plain(render_output("shout", {}, [{"type": "text", "text": "HI"}])) == "  ⎿  HI"
+    assert plain(render_output("update_plan", {}, "[x] a\n[ ] b")) == "  ⎿  ☒ a\n     ☐ b"
+    assert plain(render_output("grep", {}, "")) == "  ⎿  (no output)"
+
+
+def test_edit_and_write_calls_show_a_preview(tmp_path):
+    (tmp_path / "a.py").write_text("keep\nold line\n")
+    session, out = make_session(
+        tmp_path,
+        [
+            [
+                function_call(
+                    "edit_file",
+                    {"path": "a.py", "old_string": "old line", "new_string": "new line"},
+                    call_id="c1",
+                )
+            ],
+            [function_call("write_file", {"path": "b.py", "content": "x = 1\n"}, call_id="c2")],
+            [assistant_message("ok")],
+        ],
+        auto_approve=True,
+    )
+    asyncio.run(session.run_turn("go"))
+
+    printed = out.getvalue()
+    assert "● Update(a.py)" in printed and "-old line" in printed and "+new line" in printed
+    assert "● Write(b.py)" in printed and "+x = 1" in printed
+
+
+def test_split_blocks():
+    assert split_blocks("para one\n\npara two\nstill tw") == (["para one"], "para two\nstill tw")
+    # nothing is final until the line after the blank one is known
+    assert split_blocks("para one\n\n") == ([], "para one\n\n")
+    # blank lines inside a code fence do not split
+    fenced = "```py\na = 1\n\nb = 2\n```\n\nafter\n"
+    assert split_blocks(fenced) == (["```py\na = 1\n\nb = 2\n```"], "after\n")
+    # an indented continuation stays with its list item
+    assert split_blocks("1. item\n\n   more\n\nnext\n") == (["1. item\n\n   more"], "next\n")
+
+
+def test_complete_history_drops_unanswered_calls():
+    items = [
+        {"role": "user", "content": "hi"},
+        {"type": "reasoning", "id": "r1"},
+        {"type": "function_call", "call_id": "a", "name": "t", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "a", "output": "ok"},
+        {"type": "reasoning", "id": "r2"},
+        {"type": "function_call", "call_id": "b", "name": "t", "arguments": "{}"},
+    ]
+    assert complete_history(items) == items[:4]
+
+
+def test_interrupted_turn_keeps_finished_work(tmp_path):
+    session, _ = make_session(
+        tmp_path,
+        [
+            [function_call("write_file", {"path": "a.txt", "content": "1"}, call_id="c1")],
+            [function_call("run_shell", {"command": "sleep 30"}, call_id="c2")],
+            [assistant_message("after")],
+        ],
+        auto_approve=True,
+    )
+
+    async def scenario():
+        turn = asyncio.ensure_future(session.run_turn("go"))
+        while not (tmp_path / "a.txt").exists():
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.3)  # let the shell command start
+        turn.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await turn
+        return await session.run_turn("continue")
+
+    assert asyncio.run(scenario()) == "after"
+    sent = session.agent.model.last_call.input
+    types = [item.get("type") or item.get("role") for item in sent]
+    assert types.count("function_call") == types.count("function_call_output") == 1
+    contents = [item.get("content") for item in sent if item.get("role") == "user"]
+    assert contents == ["go", "[Request interrupted by user]", "continue"]

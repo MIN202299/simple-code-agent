@@ -15,8 +15,10 @@ from agents.testing import ScriptedModel, assistant_message, function_call
 from rich.console import Console
 
 from code_agent.agent import build_instructions
-from code_agent.cli import Session, connect_mcp, select_mcp_specs, skill_message
+from code_agent.cli import connect_mcp, select_mcp_specs
+from code_agent.commands import match_commands, run_command, skill_message
 from code_agent.mcp_config import MCPConfigError, build_server, load_mcp_specs
+from code_agent.session import PlainUI, Session
 from code_agent.skills import discover_skills, parse_front_matter
 
 set_tracing_disabled(True)
@@ -30,7 +32,7 @@ def make_console():
 
 def make_session(tmp_path, steps, **kwargs):
     console, out = make_console()
-    session = Session(tmp_path, model=ScriptedModel(steps), console=console, **kwargs)
+    session = Session(tmp_path, model=ScriptedModel(steps), ui=PlainUI(console), **kwargs)
     return session, out
 
 
@@ -143,7 +145,8 @@ def test_update_plan_is_stored_and_rendered(tmp_path):
     assert good == "[x] read code\n[~] fix bug\n[ ] run tests"
     assert "invalid status" in bad
     printed = out.getvalue()
-    assert "[~] fix bug" in printed and "[ ] run tests" in printed
+    assert "● Update Todos" in printed
+    assert "☒ read code" in printed and "☐ fix bug" in printed and "☐ run tests" in printed
 
 
 # --- MCP ------------------------------------------------------------------
@@ -249,8 +252,7 @@ def test_mcp_tools_run_through_a_real_stdio_server_with_approval(tmp_path):
                         [assistant_message("done again")],
                     ]
                 ),
-                console=console,
-                approver=approver,
+                ui=PlainUI(console, approver),
                 mcp_servers=servers,
             )
             assert runner.run(session.run_turn("go")) == "done"
@@ -264,3 +266,36 @@ def test_mcp_tools_run_through_a_real_stdio_server_with_approval(tmp_path):
     assert all(expected in output for expected, output in zip([">B", ">C", ">D"], outputs[1:]))
     tool_names = [tool.name for tool in session.agent.model.first_call.tools]
     assert "shout" in tool_names and "read_file" in tool_names
+
+
+# --- slash commands ---------------------------------------------------------
+
+
+def test_commands_and_completion(tmp_path):
+    write_skill(tmp_path / ".agents/skills", "review", "---\ndescription: d\n---\nDo the review.")
+    skills = discover_skills(tmp_path, tmp_path / "home")
+    session, _ = make_session(tmp_path, [], skills=skills)
+    lines: list[str] = []
+
+    def run(line):
+        return asyncio.run(run_command(session, line, lines.append))
+
+    assert [c.name for c in match_commands(session, "/")][-1] == "review"
+    assert [c.name for c in match_commands(session, "/m")] == ["model", "mcp"]
+    assert match_commands(session, "/model x") == [] and match_commands(session, "hi") == []
+
+    assert run("/exit").exit
+    session.history = ["x"]
+    run("/clear")
+    assert session.history == []
+    run("/yes")
+    assert session.context.auto_approve is True
+    run("/model other")
+    assert session.model_name == "other" and "other" in lines[-1]
+    assert "Do the review." in run("/review auth.py").prompt
+    run("/nope")
+    assert "未知命令" in lines[-1]
+    run("/mcp")
+    assert "没有已连接" in lines[-1]
+    run("/skills")
+    assert any("/review" in line for line in lines)

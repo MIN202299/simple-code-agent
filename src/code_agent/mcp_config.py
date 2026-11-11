@@ -54,14 +54,14 @@ def user_config_path(home: Path | None = None) -> Path:
     return (home or Path.home()) / ".code_agent" / "mcp.json"
 
 
-def _expand(value: Any) -> Any:
+def expand_env(value: Any) -> Any:
     """Expand `${VAR}` and `${VAR:-default}` in strings, recursively."""
     if isinstance(value, str):
         return _VAR_RE.sub(lambda m: os.environ.get(m.group(1), m.group(2) or ""), value)
     if isinstance(value, list):
-        return [_expand(v) for v in value]
+        return [expand_env(v) for v in value]
     if isinstance(value, dict):
-        return {k: _expand(v) for k, v in value.items()}
+        return {k: expand_env(v) for k, v in value.items()}
     return value
 
 
@@ -81,7 +81,7 @@ def _read(path: Path, source: str) -> list[MCPServerSpec]:
             raise MCPConfigError(f"{path}: server {name!r} needs a 'command' or a 'url'")
         if config.get("disabled"):
             continue
-        specs.append(MCPServerSpec(name, _expand(config), source))
+        specs.append(MCPServerSpec(name, expand_env(config), source))
     return specs
 
 
