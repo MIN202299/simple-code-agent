@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from agents import RunContextWrapper, function_tool
+from typing_extensions import TypedDict
+
+from .skills import Skill
 
 MAX_OUTPUT_CHARS = 30_000
 MAX_READ_LINES = 2000
@@ -27,6 +30,12 @@ class AgentContext:
     workspace: Path
     auto_approve: bool = False
     always_allowed: set[str] = field(default_factory=set)
+    skills: dict[str, Skill] = field(default_factory=dict)
+    plan: list[dict[str, str]] = field(default_factory=list)
+
+    def readable_roots(self) -> list[Path]:
+        """The workspace plus skill directories, which are readable but not writable."""
+        return [self.workspace, *(skill.directory for skill in self.skills.values())]
 
 
 Ctx = RunContextWrapper[AgentContext]
@@ -40,17 +49,21 @@ def _tool_error(_ctx: RunContextWrapper[Any], error: Exception) -> str:
     return f"Error: {error}"
 
 
-def _resolve(ctx: Ctx, path: str) -> Path:
-    """Resolve `path` against the workspace and refuse to leave it."""
+def _resolve(ctx: Ctx, path: str, write: bool = False) -> Path:
+    """Resolve `path` against the workspace and refuse to leave the allowed roots."""
     workspace = ctx.context.workspace
     resolved = (workspace / Path(path).expanduser()).resolve()
-    if resolved != workspace and workspace not in resolved.parents:
+    roots = [workspace] if write else ctx.context.readable_roots()
+    if not any(resolved == root or root in resolved.parents for root in roots):
         raise ToolError(f"path {path!r} is outside the workspace {workspace}")
     return resolved
 
 
 def _rel(ctx: Ctx, path: Path) -> str:
-    return os.path.relpath(path, ctx.context.workspace)
+    workspace = ctx.context.workspace
+    if path == workspace or workspace in path.parents:
+        return os.path.relpath(path, workspace)
+    return str(path)
 
 
 def _truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
@@ -119,7 +132,7 @@ def write_file(ctx: Ctx, path: str, content: str) -> str:
         path: File path, relative to the workspace root.
         content: The complete new content of the file.
     """
-    file = _resolve(ctx, path)
+    file = _resolve(ctx, path, write=True)
     existed = file.exists()
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text(content, encoding="utf-8")
@@ -142,7 +155,7 @@ def edit_file(
         new_string: The text to replace it with.
         replace_all: Replace every occurrence instead of requiring a unique match.
     """
-    file = _resolve(ctx, path)
+    file = _resolve(ctx, path, write=True)
     if not file.is_file():
         raise ToolError(f"{path} is not a file")
     if not old_string:
@@ -283,4 +296,60 @@ async def run_shell(ctx: Ctx, command: str, timeout: int = 120) -> str:
     return _truncate(f"{output}\n[exit code: {proc.returncode}]".lstrip())
 
 
-ALL_TOOLS = [read_file, write_file, edit_file, list_dir, glob_files, grep, run_shell]
+@function_tool(failure_error_function=_tool_error)
+def load_skill(ctx: Ctx, name: str) -> str:
+    """Load the full instructions of a skill listed in the system prompt.
+
+    Args:
+        name: The skill name exactly as listed.
+    """
+    skill = ctx.context.skills.get(name.strip().lower())
+    if skill is None:
+        available = ", ".join(ctx.context.skills) or "(none)"
+        raise ToolError(f"unknown skill {name!r}; available skills: {available}")
+    return skill.render()
+
+
+class PlanStep(TypedDict):
+    step: str
+    """Short description of the step."""
+    status: str
+    """One of: pending, in_progress, completed."""
+
+
+PLAN_MARKS = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
+
+
+@function_tool(failure_error_function=_tool_error)
+def update_plan(ctx: Ctx, steps: list[PlanStep]) -> str:
+    """Record or update the task plan shown to the user as a checklist.
+
+    Use it for tasks with three or more steps: send the whole list every time,
+    with at most one step in_progress, and update it as steps are completed.
+
+    Args:
+        steps: The complete plan, in order.
+    """
+    plan = []
+    for item in steps:
+        status = item.get("status", "pending")
+        if status not in PLAN_MARKS:
+            raise ToolError(f"invalid status {status!r}; use pending, in_progress or completed")
+        plan.append({"step": str(item.get("step", "")).strip(), "status": status})
+    ctx.context.plan = plan
+    if not plan:
+        return "Plan cleared."
+    return "\n".join(f"{PLAN_MARKS[p['status']]} {p['step']}" for p in plan)
+
+
+ALL_TOOLS = [
+    read_file,
+    write_file,
+    edit_file,
+    list_dir,
+    glob_files,
+    grep,
+    run_shell,
+    load_skill,
+    update_plan,
+]

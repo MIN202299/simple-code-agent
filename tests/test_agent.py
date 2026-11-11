@@ -214,3 +214,5 @@ def test_formatting_helpers():
     assert format_call("t", "not json") == "t(arguments=not json)"
     out = format_output("\n".join(str(i) for i in range(10)))
     assert out.startswith("  ⎿ 0") and "+4 行" in out
+    assert format_output({"type": "text", "text": "HI"}) == "  ⎿ HI"
+    assert format_output([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]) == "  ⎿ a\n    b"

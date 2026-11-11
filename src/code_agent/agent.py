@@ -7,7 +7,9 @@ import platform
 from pathlib import Path
 
 from agents import Agent, Model
+from agents.mcp import MCPServer
 
+from .skills import Skill, skills_prompt
 from .tools import ALL_TOOLS, AgentContext
 
 PROJECT_DOC_NAMES = ("AGENTS.md", "CLAUDE.md")
@@ -25,6 +27,8 @@ understand the relevant code. Never guess at file contents.
 write_file only for new files or full rewrites.
 - Follow the conventions already present in the project (style, libraries, structure).
 - After changing code, verify it when you can: run the tests, the linter, or the program.
+- For tasks with three or more steps, keep a checklist with update_plan and update it as you go.
+- Tools from MCP servers may also be available; use them when they fit the task.
 - Keep changes focused on what was asked. Do not commit or push unless asked to.
 - Tool calls that modify files or run commands may need the user's approval. \
 If one is rejected, do not retry it unchanged: adapt, or ask the user what they want.
@@ -43,7 +47,7 @@ Be honest about anything that failed or that you did not check.
 """
 
 
-def build_instructions(workspace: Path) -> str:
+def build_instructions(workspace: Path, skills: dict[str, Skill] | None = None) -> str:
     text = SYSTEM_PROMPT.format(
         workspace=workspace,
         platform=f"{platform.system()} {platform.release()}",
@@ -55,14 +59,20 @@ def build_instructions(workspace: Path) -> str:
             content = doc.read_text(encoding="utf-8", errors="replace")[:MAX_PROJECT_DOC_CHARS]
             text += f"\n# Project instructions (from {name})\n{content}\n"
             break
-    return text
+    return text + skills_prompt(skills or {})
 
 
-def build_agent(workspace: Path, model: str | Model | None = None) -> Agent[AgentContext]:
+def build_agent(
+    workspace: Path,
+    model: str | Model | None = None,
+    skills: dict[str, Skill] | None = None,
+    mcp_servers: list[MCPServer] | None = None,
+) -> Agent[AgentContext]:
     """Create the coding agent. `model=None` uses the SDK's default model."""
     return Agent[AgentContext](
         name="Code Agent",
-        instructions=build_instructions(workspace),
+        instructions=build_instructions(workspace, skills),
         tools=list(ALL_TOOLS),
+        mcp_servers=list(mcp_servers or []),
         model=model,
     )
