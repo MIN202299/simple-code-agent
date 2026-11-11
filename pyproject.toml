@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "simple-code-agent"
+version = "0.1.0"
+description = "A command-line coding agent built on the OpenAI Agents SDK"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "openai-agents>=0.24.0",
+    "rich>=13.0",
+    "prompt_toolkit>=3.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+code-agent = "code_agent.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/code_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
