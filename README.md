@@ -1,11 +1,19 @@
-# simple-code-agent
+# Nori
 
-基于 [OpenAI Agents SDK](https://github.com/openai/openai-agents-python) 实现的命令行 code agent：在终端里用自然语言让它读代码、改代码、跑命令。
+```
+ /\_/\ ♪
+( ^.^ )    Nori — 终端里的 AI 编程搭档
+ > ^ <~
+```
+
+Nori 是一个基于 [OpenAI Agents SDK](https://github.com/openai/openai-agents-python) 的命令行 code agent：在终端里用自然语言让它读代码、改代码、跑命令。名字来自常驻输入框旁边的那只小黑猫。
 
 ## 功能
 
-- **TUI**：类似 Claude Code 的终端界面——底部固定输入框，流式 Markdown 渲染，工具调用与 diff 预览，审批对话框，斜杠命令补全
-- **配置文件**：在 `~/.code_agent/config.json` 中配置 base url、api key 和模型，首次运行有交互式向导
+- **TUI**：底部固定输入框，流式 Markdown 渲染，带状态的工具调用与 diff 预览，审批对话框，`/` 命令和 `@` 文件补全
+- **宠物 Nori**：一只会随 agent 状态变表情、陪你干活会升级的小猫
+- **可打包**：一条命令打成不依赖 Python 的单文件可执行程序
+- **配置文件**：在 `~/.nori/config.json` 中配置 base url、api key 和模型，首次运行有交互式向导
 - 内置工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`glob_files`、`grep`、`run_shell`
 - **Skill**：从 `SKILL.md` 加载可复用的任务指引，按需加载，也可用 `/<skill>` 直接调用
 - **MCP**：通过 `.mcp.json` 接入 stdio / HTTP / SSE 的 MCP 服务器，其工具自动提供给 agent
@@ -17,16 +25,16 @@
 
 ## 安装
 
-需要 Python 3.11+。
+需要 Python 3.11+（或者直接用[打包好的可执行程序](#打包成可执行程序)）。
 
 ```bash
 pip install -e .          # 或: uv pip install -e .
-code-agent --setup        # 填写 base url、api key、模型
+nori --setup        # 填写 base url、api key、模型
 ```
 
 ## 配置
 
-配置保存在 `~/.code_agent/config.json`：
+配置保存在 `~/.nori/config.json`：
 
 ```json
 {
@@ -45,15 +53,16 @@ code-agent --setup        # 填写 base url、api key、模型
 | `api` | `responses` 或 `chat`。省略时：设置了非 OpenAI 的 `base_url` 用 `chat`，否则用 `responses` |
 | `max_turns` | 单个任务的最大模型轮数（每次模型回复算一轮），默认 200 |
 
-- `code-agent --setup` 会交互式地创建或修改这个文件（Key 输入不回显，文件权限为 600）。
+- `nori --setup` 会交互式地创建或修改这个文件（Key 输入不回显，文件权限为 600）。
 - 没有配置 Key 时，首次启动会自动进入这个向导。
-- 用 `--config PATH` 或环境变量 `CODE_AGENT_CONFIG` 可以换一个配置文件，方便在多个服务之间切换。
+- 用 `--config PATH` 或环境变量 `NORI_CONFIG` 可以换一个配置文件，方便在多个服务之间切换。
+- 从旧版本升级时，`~/.code_agent` 目录会在首次启动时自动改名为 `~/.nori`。原来的 `CODE_AGENT_*` 环境变量需要手动改成 `NORI_*`。
 - 只读取用户级配置，不读取项目目录里的配置：否则一个仓库就能通过改 `base_url` 把你的 Key 发到别处。
 
 优先级从高到低：
 
 1. 命令行参数 `--model`、`--base-url`、`--api`、`--max-turns`
-2. 环境变量 `CODE_AGENT_MODEL`、`CODE_AGENT_API`
+2. 环境变量 `NORI_MODEL`、`NORI_API`
 3. 配置文件
 4. 通用环境变量 `OPENAI_API_KEY`、`OPENAI_BASE_URL`
 
@@ -62,10 +71,10 @@ code-agent --setup        # 填写 base url、api key、模型
 ## 使用
 
 ```bash
-code-agent                          # 在当前目录打开 TUI
-code-agent -C path/to/project       # 指定工作区
-code-agent "给 utils.py 补上单元测试"  # 执行一个任务后退出（逐行输出，适合脚本）
-code-agent -m other-model -y        # 临时换模型，并自动批准所有操作
+nori                          # 在当前目录打开 TUI
+nori -C path/to/project       # 指定工作区
+nori "给 utils.py 补上单元测试"  # 执行一个任务后退出（逐行输出，适合脚本）
+nori -m other-model -y        # 临时换模型，并自动批准所有操作
 ```
 
 | 参数 | 说明 |
@@ -86,15 +95,19 @@ code-agent -m other-model -y        # 临时换模型，并自动批准所有操
 ## TUI
 
 ```
-╭──────────────────────────────────────────────╮
-│ ✻ Code Agent v0.2.0                          │
-│                                              │
-│   模型    your-model-name                    │
-│   接口    https://… · chat · key sk-…1234    │
-│   工作区  ~/project                          │
-╰──────────────────────────────────────────────╯
+╭─ Nori v0.3.0 ──────────────────────────────────────────╮
+│                                                        │
+│   /\_/\ ♪    终端里的 AI 编程搭档                       │
+│  ( ^.^ )                                               │
+│   > ^ <~     模型    your-model-name                   │
+│  Nori Lv.3   接口    https://… · chat                  │
+│              工作区  ~/project (⎇ main)                │
+│              扩展    2 个 skill · 1 个 MCP 服务器       │
+│                                                        │
+│  输入任务开始 · / 命令 · @ 引用文件 · ? 快捷键           │
+╰────────────────────────────────────────────────────────╯
 
-> 修复 calc.py 里的 bug
+❯ 修复 calc.py 里的 bug
 
 ● Read(calc.py)
   ⎿  Read 2 lines
@@ -102,34 +115,40 @@ code-agent -m other-model -y        # 临时换模型，并自动批准所有操
 ● Update(calc.py)
      -    return a - b
      +    return a + b
-──────────────────────────────────────────────────
- 需要确认 · Update
-   Update(calc.py)
+  ⎿  Edited calc.py (1 replacement)  +1 -1
 
- 是否允许执行？
- ❯ 1. 是
-   2. 是，本次会话不再询问 Update
-   3. 否，让 agent 换个做法 (esc)
+● 减号写错了，已经改成加号。
+
+  =^.^= 完成 · 6s · 2 次工具调用 · ↑ 3.1k ↓ 212
+
+──────────────────────────────────────────────  /\_/\
+❯ 描述你想做的事…                              ( o.o )
+──────────────────────────────────────────────  > ^ <
+  ? 快捷键 · / 命令 · @ 文件      your-model-name · 上下文 3.3k · ⎇ main
 ```
 
 界面是内联绘制的，不占用备用屏幕：对话记录直接进入终端的滚动缓冲区，可以照常滚动、选择和复制。
+
+- **工具调用**：执行中显示在底部的实时区（转圈和计时），结束后连同结果写入记录，圆点绿色表示成功、红色表示失败或被拒绝。改文件时附带 diff。
+- **状态行**：显示宠物的表情、正在做什么、已用时间和本轮输出的 token 数。
+- **底栏**：左边是模式和提示，右边是模型、当前上下文大小和 git 分支。开启自动批准后输入框边线变色。
+- **排队**：agent 工作时可以继续输入，发送的消息在当前任务结束后依次执行。
+- **中断与续跑**：中断任务或达到最大轮数后，已完成的步骤保留在上下文里，输入"继续"即可接着做。
+- **防误触**：审批对话框弹出后的前半秒不响应按键，避免正在输入的内容误批准操作。
 
 | 按键 | 作用 |
 | --- | --- |
 | `Enter` | 发送 |
 | `Alt+Enter` / `Ctrl-J` | 换行 |
-| `Esc` | 中断正在执行的任务 |
-| `↑` / `↓` | 历史输入；在命令菜单和审批对话框中移动选择 |
-| `/` | 打开命令菜单，`Tab` 补全，`Enter` 执行 |
+| `Esc` | 中断正在执行的任务；关闭菜单 |
+| `/` | 命令菜单，`Tab` 补全，`Enter` 执行 |
+| `@` | 文件菜单，按路径模糊匹配，`Tab` / `Enter` 插入 |
+| `?` | 输入框为空时显示快捷键 |
+| `↑` / `↓` | 历史输入；在菜单和审批对话框中移动选择 |
 | `Shift+Tab` | 开关自动批准 |
 | `Ctrl-C` | 中断任务；空闲时清空输入，再按一次退出 |
 | `Ctrl-D` | 退出 |
 | `Ctrl-L` | 清屏 |
-
-- agent 工作时可以继续输入，发送的消息会排队，在当前任务结束后依次执行。
-- 中断任务后，已经完成的步骤会保留在上下文里，可以接着说"继续"。
-- 任务达到最大轮数时同样会保留已完成的步骤，输入"继续"即可接着做；上限可用 `max_turns` 调大。
-- 审批对话框弹出后的前半秒不响应按键，避免正在输入的内容误批准操作。
 
 命令：
 
@@ -138,11 +157,31 @@ code-agent -m other-model -y        # 临时换模型，并自动批准所有操
 | `/help` | 显示帮助 |
 | `/clear` | 清空对话上下文 |
 | `/model [name]` | 查看或切换模型（仅本次会话） |
+| `/status` | 查看模型、接口、上下文大小和累计用量 |
 | `/yes` | 开关自动批准 |
 | `/skills` | 列出可用的 skill |
 | `/<skill> [text]` | 直接使用某个 skill |
 | `/mcp` | 列出已连接的 MCP 服务器及其工具 |
+| `/pet` | 看看你的宠物 |
 | `/exit` | 退出 |
+
+## 宠物
+
+Nori 住在输入框右边，表情跟着 agent 的状态走：
+
+| 状态 | 样子 |
+| --- | --- |
+| 空闲 | `( o.o )`，偶尔眨眼 |
+| 思考 | `( o.O )` 加一个问号 |
+| 执行工具 | `( >.< )` 爪子在动 |
+| 等你确认 | `( o.o )` 加一个感叹号 |
+| 任务完成 | `( ^.^ )` ♪ |
+| 出错或被中断 | `( x.x )` |
+| 你很久没动 | `( -.- )` zZ |
+
+- 每完成一个任务得 10 点经验，每次工具调用得 1 点，攒够了会升级（小奶猫 → 见习喵 → 码农喵 → …）。
+- `/pet` 查看等级和战绩，`/pet name 小黑` 改名，`/pet hide` / `/pet show` 隐藏或显示。
+- 状态保存在 `~/.nori/pet.json`。终端宽度不足 64 列时自动隐藏。
 
 ## Skill
 
@@ -174,13 +213,13 @@ description: 按团队清单做代码审查。当用户要求 review 代码时�
 
 1. `<工作区>/.agents/skills/`
 2. `<工作区>/.claude/skills/`
-3. `~/.code_agent/skills/`
+3. `~/.nori/skills/`
 4. `~/.agents/skills/`
 5. `~/.claude/skills/`
 
 ## MCP
 
-在 `<工作区>/.mcp.json`（项目级）或 `~/.code_agent/mcp.json`（用户级）中配置，格式与其他 coding agent 通用的 `mcpServers` 一致；同名时项目级覆盖用户级：
+在 `<工作区>/.mcp.json`（项目级）或 `~/.nori/mcp.json`（用户级）中配置，格式与其他 coding agent 通用的 `mcpServers` 一致；同名时项目级覆盖用户级：
 
 ```json
 {
@@ -210,11 +249,11 @@ description: 按团队清单做代码审查。当用户要求 review 代码时�
 
 | 变量 | 说明 |
 | --- | --- |
-| `CODE_AGENT_CONFIG` | 配置文件路径 |
-| `CODE_AGENT_MODEL` | 模型名，覆盖配置文件 |
-| `CODE_AGENT_API` | `responses` 或 `chat`，覆盖配置文件 |
+| `NORI_CONFIG` | 配置文件路径 |
+| `NORI_MODEL` | 模型名，覆盖配置文件 |
+| `NORI_API` | `responses` 或 `chat`，覆盖配置文件 |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | 配置文件里没有对应项时使用 |
-| `CODE_AGENT_TRACING` | 设为 `1` 时开启 SDK 的 tracing（会把运行数据上传到 OpenAI，默认关闭） |
+| `NORI_TRACING` | 设为 `1` 时开启 SDK 的 tracing（会把运行数据上传到 OpenAI，默认关闭） |
 
 ## 安全说明
 
@@ -223,22 +262,44 @@ description: 按团队清单做代码审查。当用户要求 review 代码时�
 - skill 的内容会进入模型上下文并影响它的行为，只使用你信任的 skill。
 - 配置文件里的 API Key 是明文保存的（权限 600）。不想落盘可以写 `"api_key": "${MY_KEY}"`。
 
+## 打包成可执行程序
+
+```bash
+pip install -e ".[build]"
+python scripts/build.py            # 单文件：dist/nori（Windows 上是 dist/nori.exe）
+python scripts/build.py --onedir   # 文件夹：dist/nori/，启动更快
+```
+
+- 产物不依赖 Python，拷到 `PATH` 里的任意目录就能用（例如 `/usr/local/bin/nori`）。
+- PyInstaller 不能交叉编译：在哪个系统和 CPU 上构建，产物就只能在那上面运行。
+- 单文件版每次启动要先解压，会慢几秒；介意的话用 `--onedir`。
+- `.github/workflows/release.yml` 会在推送 `v*` 标签时为 Linux、macOS、Windows 各构建一份并发布到 GitHub Release，也可以在 Actions 页面手动触发。
+
+如果只是想全局安装而不需要脱离 Python，可以用 `pipx install .` 或 `uv tool install .`。
+
 ## 项目结构
 
 ```
-src/code_agent/
+src/nori/
   cli.py         # 入口：参数解析，选择 TUI / 简单模式 / 一次性执行
   tui.py         # 终端界面（prompt_toolkit）
+  pet.py         # 宠物的表情、台词和成长
   render.py      # 工具调用、结果、Markdown 的显示格式
   session.py     # 对话与运行循环、审批流程、中断处理
   commands.py    # 斜杠命令
   config.py      # 配置文件与设置向导
+  branding.py    # 应用名、主题色、用户目录
   tools.py       # 工具实现与审批策略
   skills.py      # skill 的发现与解析
   mcp_config.py  # MCP 配置加载与服务器构建
   agent.py       # 系统提示与 Agent 构建
+scripts/
+  build.py       # 用 PyInstaller 打包
+  entry.py       # 可执行程序的入口
 tests/           # 用 SDK 的 ScriptedModel 驱动真实运行循环；TUI 用管道输入做无头测试
 ```
+
+想换个名字？改 `src/nori/branding.py` 里的常量、`pyproject.toml` 里的包名和命令名即可。
 
 ## 开发
 

@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from .branding import app_dir
+
 SKILL_FILE = "SKILL.md"
 MAX_DESCRIPTION_CHARS = 500
 _NAME_RE = re.compile(r"[^a-z0-9_-]+")
@@ -41,7 +43,7 @@ def skill_dirs(workspace: Path, home: Path | None = None) -> list[Path]:
     return [
         workspace / ".agents" / "skills",
         workspace / ".claude" / "skills",
-        home / ".code_agent" / "skills",
+        app_dir(home) / "skills",
         home / ".agents" / "skills",
         home / ".claude" / "skills",
     ]

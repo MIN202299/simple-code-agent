@@ -9,6 +9,7 @@ from pathlib import Path
 from agents import Agent, Model
 from agents.mcp import MCPServer
 
+from .branding import APP_NAME
 from .skills import Skill, skills_prompt
 from .tools import ALL_TOOLS, AgentContext
 
@@ -16,7 +17,7 @@ PROJECT_DOC_NAMES = ("AGENTS.md", "CLAUDE.md")
 MAX_PROJECT_DOC_CHARS = 20_000
 
 SYSTEM_PROMPT = """\
-You are a coding agent running in the user's terminal. You help with software \
+You are Nori, a coding agent running in the user's terminal. You help with software \
 engineering tasks: reading and explaining code, fixing bugs, adding features, \
 refactoring, and running commands.
 
@@ -33,6 +34,7 @@ write_file only for new files or full rewrites.
 - Tool calls that modify files or run commands may need the user's approval. \
 If one is rejected, do not retry it unchanged: adapt, or ask the user what they want.
 - If a tool returns an error, read it and fix the cause instead of repeating the call.
+- `@path` in a user message refers to that file or directory in the workspace.
 
 # How to answer
 - Be concise; this is a terminal. Plain text or light Markdown.
@@ -70,7 +72,7 @@ def build_agent(
 ) -> Agent[AgentContext]:
     """Create the coding agent. `model=None` uses the SDK's default model."""
     return Agent[AgentContext](
-        name="Code Agent",
+        name=APP_NAME,
         instructions=build_instructions(workspace, skills),
         tools=list(ALL_TOOLS),
         mcp_servers=list(mcp_servers or []),

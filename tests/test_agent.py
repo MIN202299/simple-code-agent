@@ -11,8 +11,8 @@ from agents import MaxTurnsExceeded, set_tracing_disabled
 from agents.testing import ScriptedModel, assistant_message, function_call
 from rich.console import Console
 
-from code_agent.render import call_title, render_output, split_blocks
-from code_agent.session import PlainUI, Session, complete_history
+from nori.render import call_title, render_output, split_blocks
+from nori.session import PlainUI, Session, complete_history
 
 set_tracing_disabled(True)
 

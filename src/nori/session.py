@@ -14,6 +14,7 @@ from rich.markup import escape
 
 from .agent import build_agent
 from .config import DEFAULT_MAX_TURNS
+from .pet import Pet
 from .render import parse_args, render_call, render_output
 from .skills import Skill
 from .tools import AgentContext
@@ -31,11 +32,14 @@ class UI(Protocol):
     def text_done(self) -> None:
         """The current assistant message is complete."""
 
-    def tool_call(self, name: str, args: dict[str, Any]) -> None:
+    def tool_call(self, call_id: str, name: str, args: dict[str, Any]) -> None:
         """The agent called a tool."""
 
-    def tool_output(self, name: str, args: dict[str, Any], output: Any) -> None:
+    def tool_output(self, call_id: str, name: str, args: dict[str, Any], output: Any) -> None:
         """A tool call finished."""
+
+    def usage(self, input_tokens: int, output_tokens: int) -> None:
+        """Token counts of one model response; the input side is the context size."""
 
     async def approve(self, item: ToolApprovalItem) -> str:
         """Ask the user about a tool call. Returns "yes", "always" or "no"."""
@@ -65,11 +69,14 @@ class PlainUI:
             self.console.print()
             self._in_text = False
 
-    def tool_call(self, name: str, args: dict[str, Any]) -> None:
+    def tool_call(self, call_id: str, name: str, args: dict[str, Any]) -> None:
         self.console.print(render_call(name, args), highlight=False)
 
-    def tool_output(self, name: str, args: dict[str, Any], output: Any) -> None:
+    def tool_output(self, call_id: str, name: str, args: dict[str, Any], output: Any) -> None:
         self.console.print(render_output(name, args, output), highlight=False)
+
+    def usage(self, input_tokens: int, output_tokens: int) -> None:
+        pass
 
     async def approve(self, item: ToolApprovalItem) -> str:
         return self.approver(item)
@@ -143,6 +150,9 @@ class Session:
         self.history: list[Any] = []
         self.input_tokens = 0
         self.output_tokens = 0
+        self.context_tokens = 0  # size of the conversation as last seen by the model
+        self.info: dict[str, str] = {}  # endpoint details shown by /status
+        self.pet: Pet | None = None
 
     def _build_agent(self) -> Agent[AgentContext]:
         return build_agent(
@@ -161,6 +171,7 @@ class Session:
 
     def clear(self) -> None:
         self.history = []
+        self.context_tokens = 0
 
     async def run_turn(self, text: str) -> str | None:
         """Run one user turn to completion, pausing for tool approvals.
@@ -225,6 +236,11 @@ class Session:
                 if event.type == "raw_response_event":
                     if event.data.type == "response.output_text.delta":
                         ui.text_delta(event.data.delta)
+                    elif event.data.type == "response.completed":
+                        usage = getattr(event.data.response, "usage", None)
+                        if usage is not None and usage.input_tokens:
+                            self.context_tokens = usage.input_tokens + usage.output_tokens
+                            ui.usage(usage.input_tokens, usage.output_tokens)
                 elif event.type == "run_item_stream_event":
                     ui.text_done()
                     item = event.item
@@ -232,10 +248,12 @@ class Session:
                     if item.type == "tool_call_item":
                         name = getattr(raw, "name", None) or "tool"
                         args = parse_args(getattr(raw, "arguments", None))
-                        calls[getattr(raw, "call_id", "")] = (name, args)
-                        ui.tool_call(name, args)
+                        call_id = getattr(raw, "call_id", "") or ""
+                        calls[call_id] = (name, args)
+                        ui.tool_call(call_id, name, args)
                     elif item.type == "tool_call_output_item":
-                        name, args = calls.get(_call_id(raw) or "", ("tool", {}))
-                        ui.tool_output(name, args, item.output)
+                        call_id = _call_id(raw) or ""
+                        name, args = calls.get(call_id, ("tool", {}))
+                        ui.tool_output(call_id, name, args, item.output)
         finally:
             ui.text_done()

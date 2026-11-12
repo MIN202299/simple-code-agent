@@ -21,6 +21,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from . import __version__
+from .branding import APP_NAME, COMMAND, LEGACY_DIR_NAME, TAGLINE, migrate_legacy_dir
 from .commands import run_command
 from .config import (
     ConfigError,
@@ -57,7 +58,7 @@ def run_plain_turn(runner: asyncio.Runner, session: Session, console: Console, t
 def plain_repl(runner: asyncio.Runner, session: Session, console: Console) -> None:
     """Line-oriented REPL, used when stdin or stdout is not a terminal."""
     console.print(
-        f"[bold]Code Agent[/bold] v{__version__}  "
+        f"[bold]{APP_NAME}[/bold] v{__version__}  "
         f"[dim]模型: {escape(session.model_name)}  工作区: {session.context.workspace}[/dim]"
     )
     while True:
@@ -123,14 +124,14 @@ def apply_settings(settings: Settings) -> None:
     if settings.api == "chat":
         set_default_openai_api("chat_completions")
     # Tracing uploads run data to OpenAI; keep it opt-in.
-    if os.environ.get("CODE_AGENT_TRACING") != "1":
+    if os.environ.get("NORI_TRACING") != "1":
         set_tracing_disabled(True)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="code-agent",
-        description="基于 OpenAI Agents SDK 的命令行 code agent。",
+        prog=COMMAND,
+        description=f"{APP_NAME} — {TAGLINE}。",
     )
     parser.add_argument("prompt", nargs="*", help="直接执行该任务后退出；省略则进入交互界面")
     parser.add_argument("-m", "--model", help="模型名（覆盖配置文件）")
@@ -141,7 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="使用 Responses API 还是 Chat Completions API；"
         "默认：自定义 base url 用 chat，否则用 responses",
     )
-    parser.add_argument("--config", help="配置文件路径（默认 ~/.code_agent/config.json）")
+    parser.add_argument("--config", help="配置文件路径（默认 ~/.nori/config.json）")
     parser.add_argument("--setup", action="store_true", help="交互式创建或修改配置文件后退出")
     parser.add_argument("-C", "--cwd", default=".", help="工作区目录（默认当前目录）")
     parser.add_argument(
@@ -161,6 +162,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     console = Console()
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    migrated = migrate_legacy_dir()
+    if migrated is not None:
+        console.print(f"[dim]已把旧的配置目录 ~/{LEGACY_DIR_NAME} 迁移到 {migrated}[/dim]")
 
     config_path = Path(args.config).expanduser() if args.config else default_config_path()
     if args.setup:
@@ -176,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         if not config.get("api_key") and not os.environ.get("OPENAI_API_KEY"):
             if not interactive:
                 console.print(
-                    f"[red]没有找到 API Key。请运行 code-agent --setup，或在 {config_path} "
+                    f"[red]没有找到 API Key。请运行 {COMMAND} --setup，或在 {config_path} "
                     "中设置 api_key，或设置环境变量 OPENAI_API_KEY。[/red]"
                 )
                 return 2
@@ -221,15 +225,19 @@ def main(argv: list[str] | None = None) -> int:
                 skills=skills,
                 mcp_servers=servers,
             )
+            session.info = {
+                "接口": f"{settings.base_url or 'OpenAI'} · {settings.api}",
+                "密钥": mask_key(settings.api_key),
+                "配置": str(config_path),
+            }
             if args.prompt:
                 ok = run_plain_turn(runner, session, console, " ".join(args.prompt))
                 return 0 if ok else 1
             if interactive and not args.plain:
+                from .pet import load_pet
                 from .tui import Tui, history_file
 
-                endpoint = settings.base_url or "OpenAI"
-                subtitle = f"{endpoint} · {settings.api} · key {mask_key(settings.api_key)}"
-                runner.run(Tui(session, subtitle=subtitle, history=history_file()).run())
+                runner.run(Tui(session, pet=load_pet(), history=history_file()).run())
             else:
                 plain_repl(runner, session, console)
         finally:

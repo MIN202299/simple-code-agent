@@ -1,6 +1,6 @@
 """User configuration: API endpoint, key and model.
 
-Settings live in `~/.code_agent/config.json`:
+Settings live in `~/.nori/config.json`:
 
     {
       "base_url": "https://api.example.com/v1",
@@ -26,6 +26,7 @@ from typing import Any
 
 from rich.console import Console
 
+from .branding import APP_NAME, app_dir
 from .mcp_config import expand_env
 
 CONFIG_KEYS = ("base_url", "api_key", "model", "api")
@@ -49,9 +50,9 @@ class Settings:
 
 def default_config_path(env: Mapping[str, str] | None = None, home: Path | None = None) -> Path:
     env = os.environ if env is None else env
-    if env.get("CODE_AGENT_CONFIG"):
-        return Path(env["CODE_AGENT_CONFIG"]).expanduser()
-    return (home or Path.home()) / ".code_agent" / "config.json"
+    if env.get("NORI_CONFIG"):
+        return Path(env["NORI_CONFIG"]).expanduser()
+    return app_dir(home) / "config.json"
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -102,7 +103,7 @@ def resolve_settings(
     api: str | None = None,
     max_turns: int | None = None,
 ) -> Settings:
-    """Combine sources. Precedence: command line > CODE_AGENT_* > config file > OPENAI_*.
+    """Combine sources. Precedence: command line > NORI_* > config file > OPENAI_*.
 
     The config file outranks the generic OPENAI_* variables because it is
     specific to this tool, while those are shared with every OpenAI client.
@@ -113,7 +114,7 @@ def resolve_settings(
         return next((value for value in values if value), None)
 
     resolved_base_url = pick(base_url, config.get("base_url"), env.get("OPENAI_BASE_URL"))
-    resolved_api = pick(api, env.get("CODE_AGENT_API"), config.get("api"))
+    resolved_api = pick(api, env.get("NORI_API"), config.get("api"))
     if resolved_api is None:
         # Compatible third-party services almost always implement only Chat Completions.
         third_party = resolved_base_url is not None and OPENAI_HOST not in resolved_base_url
@@ -123,7 +124,7 @@ def resolve_settings(
     return Settings(
         api_key=pick(config.get("api_key"), env.get("OPENAI_API_KEY")),
         base_url=resolved_base_url,
-        model=pick(model, env.get("CODE_AGENT_MODEL"), config.get("model")),
+        model=pick(model, env.get("NORI_MODEL"), config.get("model")),
         api=resolved_api,
         max_turns=max_turns or config.get("max_turns") or DEFAULT_MAX_TURNS,
     )
@@ -141,7 +142,7 @@ def run_setup(path: Path, console: Console) -> bool:
         current = load_config(path)
     except ConfigError:
         current = {}
-    console.print(f"[bold]配置 Code Agent[/bold]  [dim]{path}[/dim]")
+    console.print(f"[bold]配置 {APP_NAME}[/bold]  [dim]{path}[/dim]")
     console.print("[dim]直接回车保留方括号里的当前值。[/dim]")
 
     def ask(label: str, key: str, secret: bool = False) -> str:

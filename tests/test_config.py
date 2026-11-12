@@ -8,8 +8,8 @@ import stat
 import pytest
 from rich.console import Console
 
-from code_agent.cli import main
-from code_agent.config import (
+from nori.cli import main
+from nori.config import (
     ConfigError,
     default_config_path,
     load_config,
@@ -46,7 +46,7 @@ def test_precedence():
     env = {
         "OPENAI_API_KEY": "sk-env",
         "OPENAI_BASE_URL": "https://env/v1",
-        "CODE_AGENT_MODEL": "env-model",
+        "NORI_MODEL": "env-model",
     }
     # the config file beats the generic OPENAI_* variables
     s = resolve_settings(config, env)
@@ -64,9 +64,9 @@ def test_api_defaults_to_chat_for_third_party_endpoints():
     assert resolve_settings({"base_url": "https://api.openai.com/v1"}, {}).api == "responses"
     assert resolve_settings({"base_url": "https://other/v1"}, {}).api == "chat"
     assert resolve_settings({"base_url": "https://other/v1", "api": "responses"}, {}).api == "responses"
-    assert resolve_settings({"api": "responses"}, {"CODE_AGENT_API": "chat"}).api == "chat"
+    assert resolve_settings({"api": "responses"}, {"NORI_API": "chat"}).api == "chat"
     with pytest.raises(ConfigError):
-        resolve_settings({}, {"CODE_AGENT_API": "nope"})
+        resolve_settings({}, {"NORI_API": "nope"})
 
 
 def test_save_is_private_and_round_trips(tmp_path):
@@ -77,8 +77,8 @@ def test_save_is_private_and_round_trips(tmp_path):
 
 
 def test_paths_and_masking(tmp_path):
-    assert default_config_path({}, tmp_path) == tmp_path / ".code_agent" / "config.json"
-    assert default_config_path({"CODE_AGENT_CONFIG": "/x/y.json"}, tmp_path).as_posix() == "/x/y.json"
+    assert default_config_path({}, tmp_path) == tmp_path / ".nori" / "config.json"
+    assert default_config_path({"NORI_CONFIG": "/x/y.json"}, tmp_path).as_posix() == "/x/y.json"
     assert mask_key("sk-abcdefghijkl") == "sk-…ijkl"
     assert "ijkl" not in mask_key("short") and mask_key(None) == "(未设置)"
 

@@ -14,12 +14,12 @@ from agents.mcp import MCPServerManager
 from agents.testing import ScriptedModel, assistant_message, function_call
 from rich.console import Console
 
-from code_agent.agent import build_instructions
-from code_agent.cli import connect_mcp, select_mcp_specs
-from code_agent.commands import match_commands, run_command, skill_message
-from code_agent.mcp_config import MCPConfigError, build_server, load_mcp_specs
-from code_agent.session import PlainUI, Session
-from code_agent.skills import discover_skills, parse_front_matter
+from nori.agent import build_instructions
+from nori.cli import connect_mcp, select_mcp_specs
+from nori.commands import match_commands, run_command, skill_message
+from nori.mcp_config import MCPConfigError, build_server, load_mcp_specs
+from nori.session import PlainUI, Session
+from nori.skills import discover_skills, parse_front_matter
 
 set_tracing_disabled(True)
 ECHO_SERVER = Path(__file__).with_name("mcp_echo_server.py")
@@ -69,7 +69,7 @@ def test_discovery_priority_and_fallbacks(tmp_path):
     workspace, home = tmp_path / "ws", tmp_path / "home"
     write_skill(workspace / ".agents/skills", "review", "---\ndescription: project review\n---\nP")
     write_skill(home / ".claude/skills", "review", "---\ndescription: user review\n---\nU")
-    write_skill(home / ".code_agent/skills", "Deploy It", "# Deploy\nShip the app.\n")
+    write_skill(home / ".nori/skills", "Deploy It", "# Deploy\nShip the app.\n")
     (workspace / ".agents/skills/not-a-skill").mkdir()
 
     skills = discover_skills(workspace, home)
@@ -161,7 +161,7 @@ def test_config_loading_merging_and_expansion(tmp_path, monkeypatch):
     workspace, home = tmp_path / "ws", tmp_path / "home"
     monkeypatch.setenv("MY_TOKEN", "secret")
     write_mcp_config(
-        home / ".code_agent/mcp.json",
+        home / ".nori/mcp.json",
         {
             "shared": {"command": "user-cmd"},
             "remote": {"type": "http", "url": "https://x/mcp", "headers": {"A": "Bearer ${MY_TOKEN}"}},
@@ -194,7 +194,7 @@ def test_invalid_config_is_rejected(tmp_path, content):
 
 def test_project_servers_need_trust(tmp_path, monkeypatch):
     workspace, home = tmp_path / "ws", tmp_path / "home"
-    write_mcp_config(home / ".code_agent/mcp.json", {"mine": {"command": "a"}})
+    write_mcp_config(home / ".nori/mcp.json", {"mine": {"command": "a"}})
     write_mcp_config(workspace / ".mcp.json", {"theirs": {"command": "b"}})
     specs = load_mcp_specs(workspace, home)
     console, out = make_console()

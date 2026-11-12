@@ -7,7 +7,7 @@ Servers are declared in the same `mcpServers` JSON format other coding agents us
         "remote": {"type": "http", "url": "https://example.com/mcp", "headers": {...}}
     }}
 
-`~/.code_agent/mcp.json` holds the user's servers and `<workspace>/.mcp.json` the
+`~/.nori/mcp.json` holds the user's servers and `<workspace>/.mcp.json` the
 project's. Project servers override user servers with the same name.
 """
 
@@ -22,6 +22,8 @@ from typing import Any
 
 from agents import RunContextWrapper
 from agents.mcp import MCPServer, MCPServerSse, MCPServerStdio, MCPServerStreamableHttp
+
+from .branding import app_dir
 
 PROJECT_CONFIG = ".mcp.json"
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -51,7 +53,7 @@ class MCPServerSpec:
 
 
 def user_config_path(home: Path | None = None) -> Path:
-    return (home or Path.home()) / ".code_agent" / "mcp.json"
+    return app_dir(home) / "mcp.json"
 
 
 def expand_env(value: Any) -> Any:

@@ -6,10 +6,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from rich.cells import cell_len
 from rich.markup import escape
 from rich.text import Text
 
-from .render import shorten
+from .branding import ACCENT
+from .pet import art as pet_art
+from .render import format_tokens, shorten
 from .session import Session
 from .skills import Skill
 
@@ -35,6 +38,8 @@ BUILTIN_COMMANDS = [
     Command("model", "查看或切换模型", takes_arg=True),
     Command("skills", "列出可用的 skill"),
     Command("mcp", "列出已连接的 MCP 服务器及其工具"),
+    Command("status", "查看模型、接口和用量"),
+    Command("pet", "看看你的宠物（/pet name <名字> 改名，/pet hide|show 隐藏或显示）", takes_arg=True),
     Command("yes", "开关自动批准（跳过写文件、执行命令前的确认）"),
     Command("exit", "退出"),
 ]
@@ -102,6 +107,48 @@ async def _mcp(session: Session, emit: Emit) -> None:
             emit(f"    {escape(tool.name)}  [dim]{escape(summary)}[/dim]")
 
 
+def _status(session: Session, emit: Emit) -> None:
+    context = session.context
+    rows = [
+        ("模型", session.model_name),
+        *session.info.items(),
+        ("工作区", str(context.workspace)),
+        ("自动批准", "开启" if context.auto_approve else "关闭"),
+        ("扩展", f"{len(context.skills)} 个 skill · {len(session.mcp_servers)} 个 MCP 服务器"),
+        ("上下文", f"{format_tokens(session.context_tokens)} tokens"),
+        (
+            "累计用量",
+            f"↑ {format_tokens(session.input_tokens)} ↓ {format_tokens(session.output_tokens)} tokens",
+        ),
+    ]
+    for label, value in rows:
+        emit(Text.assemble("  ", (f"{label}  ", "dim"), " " * (8 - cell_len(label)), value))
+
+
+def _pet(session: Session, arg: str, emit: Emit) -> None:
+    pet = session.pet
+    if pet is None:
+        emit("[dim]宠物只在交互界面里出现。[/dim]")
+        return
+    action, _, value = arg.partition(" ")
+    if action == "name" and value.strip():
+        pet.name = value.strip()[:20]
+        pet.save()
+    elif action in ("hide", "show"):
+        pet.hidden = action == "hide"
+        pet.save()
+        emit(f"[dim]{escape(pet.name)} {'躲起来了' if pet.hidden else '回来了'}。[/dim]")
+        return
+    lines = pet_art("happy")
+    facts = [
+        Text.assemble((pet.name, f"bold {ACCENT}"), f"  Lv.{pet.level} {pet.title}"),
+        Text(f"经验 {pet.xp}/{pet.next_level_xp} · 生日 {pet.born}", style="dim"),
+        Text(f"陪你完成了 {pet.tasks} 个任务，用了 {pet.tools} 次工具", style="dim"),
+    ]
+    for art_line, fact in zip(lines, facts):
+        emit(Text.assemble("  ", (art_line, ACCENT), "  ", fact))
+
+
 async def run_command(session: Session, line: str, emit: Emit) -> CommandResult:
     """Run a slash command, writing its output through `emit`."""
     command, _, arg = line.partition(" ")
@@ -125,6 +172,10 @@ async def run_command(session: Session, line: str, emit: Emit) -> CommandResult:
         _skills(session, emit)
     elif name == "mcp":
         await _mcp(session, emit)
+    elif name == "status":
+        _status(session, emit)
+    elif name == "pet":
+        _pet(session, arg, emit)
     elif name in session.context.skills:
         return CommandResult(prompt=skill_message(session.context.skills[name], arg))
     else:

@@ -10,12 +10,19 @@ import difflib
 import json
 from typing import Any
 
-from rich.console import Group, RenderableType
-from rich.markdown import Markdown
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
+from rich.markdown import CodeBlock, Heading, Markdown
+from rich.padding import Padding
+from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
+from .branding import ACCENT
+
 BULLET = "●"
+PROMPT_MARK = "❯"
+# Bullet colour by tool call state.
+STATUS_STYLES = {"pending": "bold cyan", "ok": "bold green", "error": "bold red"}
 MAX_OUTPUT_LINES = 6
 MAX_DETAIL_LINES = 24
 MAX_LINE_CHARS = 160
@@ -108,11 +115,8 @@ def _diff_lines(old: str, new: str) -> list[Text]:
     return lines
 
 
-def render_call(name: str, args: dict[str, Any]) -> RenderableType:
-    """The `● Title(args)` line, plus a preview of what a mutating call will do."""
-    head = Text()
-    head.append(f"{BULLET} ", style="bold cyan")
-    head.append(call_title(name, args), style="bold")
+def call_preview(name: str, args: dict[str, Any]) -> Text | None:
+    """What a mutating call is about to do: a diff, the new file, or the full command."""
     detail: list[Text] = []
     if name == "edit_file":
         detail = _diff_lines(str(args.get("old_string", "")), str(args.get("new_string", "")))
@@ -126,9 +130,40 @@ def render_call(name: str, args: dict[str, Any]) -> RenderableType:
         if "\n" in command.strip() or len(command) > 100:
             detail = [Text(line[:MAX_LINE_CHARS], style="dim") for line in command.splitlines()]
     if not detail:
-        return head
+        return None
     shown, hidden = _clip(detail, MAX_DETAIL_LINES)
-    return Group(head, _detail(shown, hidden))
+    return _detail(shown, hidden)
+
+
+def render_call(name: str, args: dict[str, Any], status: str = "pending") -> RenderableType:
+    """The `● Title(args)` line plus the preview; the bullet colour shows the state."""
+    head = Text()
+    head.append(f"{BULLET} ", style=STATUS_STYLES[status])
+    head.append(call_title(name, args), style="bold")
+    preview = call_preview(name, args)
+    return head if preview is None else Group(head, preview)
+
+
+def is_error(output: Any) -> bool:
+    """Whether a tool result reports a failure or a rejected call."""
+    text = output_text(output).lstrip()
+    return text.startswith(("Error:", "An error occurred")) or "rejected this tool call" in text
+
+
+def format_tokens(count: int) -> str:
+    """Compact token count: 950, 1.2k, 34k, 1.2M."""
+    if count < 1000:
+        return str(count)
+    if count < 10_000:
+        return f"{count / 1000:.1f}k"
+    if count < 1_000_000:
+        return f"{count // 1000}k"
+    return f"{count / 1_000_000:.1f}M"
+
+
+def format_duration(seconds: float) -> str:
+    seconds = int(seconds)
+    return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m {seconds % 60:02d}s"
 
 
 def _result(lines: list[Text], hidden: int = 0) -> Text:
@@ -160,8 +195,13 @@ def render_plan(output: str) -> Text:
 def render_output(name: str, args: dict[str, Any], output: Any) -> RenderableType:
     """The result of a tool call, summarised to a few lines."""
     text = output_text(output).rstrip()
-    if text.startswith("Error:") or "rejected this tool call" in text:
+    if is_error(text):
         return _result([Text(line[:MAX_LINE_CHARS], style="red") for line in text.splitlines()[:4]])
+    if name == "edit_file":
+        diff = _diff_lines(str(args.get("old_string", "")), str(args.get("new_string", "")))
+        added = sum(1 for line in diff if line.plain.startswith("+"))
+        removed = sum(1 for line in diff if line.plain.startswith("-"))
+        return _result([Text(f"{text}  +{added} -{removed}", style="dim")])
     if name == "update_plan" and text.startswith("["):
         return render_plan(text)
     if name == "read_file":
@@ -175,12 +215,40 @@ def render_output(name: str, args: dict[str, Any], output: Any) -> RenderableTyp
 
 
 def render_user(text: str) -> Text:
-    out = Text(style="dim")
+    out = Text()
     for index, line in enumerate(text.splitlines() or [""]):
-        out.append("> " if index == 0 else "  ")
-        out.append(line + "\n")
+        out.append(f"{PROMPT_MARK} " if index == 0 else "  ", style=f"bold {ACCENT}")
+        out.append(line + "\n", style="bold")
     out.rstrip()
     return out
+
+
+class _ChatHeading(Heading):
+    """Left-aligned headings; the default centred, boxed ones look odd in a chat."""
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        text = self.text
+        text.justify = "left"
+        text.stylize("bold underline" if self.tag == "h1" else "bold")
+        yield text
+
+
+class _ChatCode(CodeBlock):
+    """Code blocks without the default blank padding lines."""
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        code = str(self.text).rstrip()
+        syntax = Syntax(code, self.lexer_name, theme=self.theme, word_wrap=True, padding=0)
+        yield Padding(syntax, (0, 0, 0, 2))
+
+
+class ChatMarkdown(Markdown):
+    elements = {
+        **Markdown.elements,
+        "heading_open": _ChatHeading,
+        "fence": _ChatCode,
+        "code_block": _ChatCode,
+    }
 
 
 def render_assistant(markdown: str, first: bool = True) -> RenderableType:
@@ -188,7 +256,7 @@ def render_assistant(markdown: str, first: bool = True) -> RenderableType:
     grid = Table.grid(padding=0)
     grid.add_column(width=2, no_wrap=True)
     grid.add_column(ratio=1)
-    grid.add_row(Text(BULLET if first else " "), Markdown(markdown, code_theme="ansi_dark"))
+    grid.add_row(Text(BULLET if first else " "), ChatMarkdown(markdown, code_theme="ansi_dark"))
     return grid
 
 

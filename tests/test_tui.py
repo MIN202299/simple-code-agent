@@ -12,9 +12,10 @@ from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from code_agent.session import Session
-from code_agent.skills import discover_skills
-from code_agent.tui import Tui
+from nori.session import Session
+from nori.skills import discover_skills
+from nori.pet import load_pet
+from nori.tui import Tui
 
 set_tracing_disabled(True)
 
@@ -76,8 +77,8 @@ def test_message_is_streamed_into_the_transcript(tmp_path):
 
     h = run_tui(tmp_path, [[assistant_message("Hi!\n\nSecond *paragraph*.")]], scenario)
 
-    assert "Code Agent" in h.tui.transcript[0]
-    assert "> hello there" in h.text
+    assert "Nori" in h.tui.transcript[0]
+    assert "❯ hello there" in h.text
     assert "● Hi!" in h.text and "Second paragraph." in h.text
     assert h.tui.input.text == ""
 
@@ -148,7 +149,10 @@ def test_escape_interrupts_and_the_conversation_continues(tmp_path):
     async def scenario(h: Harness):
         tui = h.tui
         h.send("go" + ENTER)
-        await h.until(lambda: "Bash(sleep 30)" in h.text)
+        await h.until(lambda: bool(tui._calls))
+        live = "".join(text for _style, text in tui._calls_text())
+        assert "Bash(sleep 30)" in live and "Bash(sleep 30)" not in h.text
+        assert tui.mood == "working"
         await asyncio.sleep(0.2)
         h.send("queued while busy" + ENTER)
         await h.until(lambda: list(tui._queue) == ["queued while busy"])
@@ -160,7 +164,8 @@ def test_escape_interrupts_and_the_conversation_continues(tmp_path):
 
     h = run_tui(tmp_path, steps, scenario, auto_approve=True)
 
-    assert h.text.index("已中断") < h.text.index("> queued while busy")
+    assert "● Bash(sleep 30)\n  ⎿  已中断" in h.text
+    assert h.text.index("已中断") < h.text.index("❯ queued while busy")
     assert "never shown" in h.text  # the queued message ran as the next turn
     sent = h.tui.session.agent.model.last_call.input
     assert [i["content"] for i in sent if i.get("role") == "user"] == [
@@ -179,9 +184,11 @@ def test_slash_menu_commands_and_skills(tmp_path):
     async def scenario(h: Harness):
         tui = h.tui
         h.send("/")
-        await h.until(lambda: len(tui._menu()) == 8)
+        await h.until(lambda: len(tui._menu()) == 10)
         menu = "".join(text for _style, text in tui._menu_text())
-        assert "/help" in menu and "/review" in menu and "review code" in menu
+        assert "❯ /help" in menu and "1/10" in menu  # eight rows shown, the list scrolls
+        review = tui._menu()[-1]
+        assert (review.label, review.description) == ("/review", "review code")
 
         h.send("m" + DOWN + ENTER)  # /model, /mcp -> second entry runs immediately
         await h.until(lambda: "没有已连接的 MCP 服务器" in h.text)
@@ -214,7 +221,7 @@ def test_slash_menu_commands_and_skills(tmp_path):
 
     h = run_tui(tmp_path, [], scenario, skills=skills)
 
-    assert "> /review auth.py" in h.text and "reviewed" in h.text
+    assert "❯ /review auth.py" in h.text and "reviewed" in h.text
     prompt = model.last_call.input[-1]["content"]
     assert "Do the review." in prompt and prompt.endswith("Request: auth.py")
 
@@ -248,3 +255,62 @@ def test_api_errors_are_shown_and_the_ui_survives(tmp_path):
 
     h = run_tui(tmp_path, [error, [assistant_message("recovered")]], scenario)
     assert "OpenAIError: connection refused" in h.text and "recovered" in h.text
+
+
+def test_file_mentions_help_panel_and_pet(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "calc.py").write_text("x = 1\n")
+    (tmp_path / "README.md").write_text("hi\n")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "calc.js").write_text("")
+
+    async def scenario(h: Harness):
+        tui = h.tui
+        h.send("?")
+        await h.until(lambda: tui._show_help)
+        assert "shift+tab" in "".join(text for _style, text in tui._help_text())
+        assert tui.input.text == ""
+        h.send(ESC)
+        await h.until(lambda: not tui._show_help)
+
+        h.send("look at @cal")
+        await h.until(lambda: [item.label for item in tui._menu()] == ["@src/calc.py"])
+        h.send(ENTER)  # accepts the completion instead of sending
+        await h.until(lambda: tui.input.text == "look at @src/calc.py ")
+        assert not tui._queue and not tui.busy
+        h.send("please" + ENTER)
+        await h.idle()
+
+        h.send("/pet name 小黑" + ENTER)
+        await h.until(lambda: tui.pet.name == "小黑")
+        h.send("/status" + ENTER)
+        await h.until(lambda: "累计用量" in h.text)
+
+    pet_file = tmp_path.parent / f"{tmp_path.name}-pet.json"
+    steps = [
+        [function_call("read_file", {"path": "src/calc.py"}, call_id="c1")],
+        [assistant_message("looked")],
+    ]
+
+    async def main():
+        with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+            session = Session(tmp_path, model=ScriptedModel(steps))
+            tui = Tui(session, pet=load_pet(pet_file))
+            harness = Harness(tui, pipe)
+            app = asyncio.ensure_future(tui.run())
+            await harness.until(lambda: tui.app.is_running)
+            try:
+                await scenario(harness)
+            finally:
+                tui.app.exit()
+                await app
+            return harness
+
+    h = asyncio.run(main())
+
+    assert "❯ look at @src/calc.py please" in h.text
+    assert "● Read(src/calc.py)\n  ⎿  Read 1 lines" in h.text
+    assert "完成 · " in h.text and "1 次工具调用" in h.text
+    assert "小黑" in h.text and "下次见" in h.tui.transcript[-1]
+    saved = load_pet(pet_file)
+    assert (saved.name, saved.tasks, saved.tools) == ("小黑", 1, 1)
