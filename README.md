@@ -331,7 +331,7 @@ python scripts/build.py --onedir   # 文件夹：dist/nori/，启动更快
 - 产物不依赖 Python，拷到 `PATH` 里的任意目录就能用（例如 `/usr/local/bin/nori`）。
 - PyInstaller 不能交叉编译：在哪个系统和 CPU 上构建，产物就只能在那上面运行。
 - 单文件版每次启动要先解压，会慢几秒；介意的话用 `--onedir`。
-- `.github/workflows/release.yml` 会在推送 `v*` 标签时为 Linux、macOS、Windows 各构建一份并发布到 GitHub Release（标签带 `-` 的标记为预发布）；在 Actions 页面手动触发则只构建不发布。
+- `.github/workflows/release.yml` 为 Linux、macOS、Windows 各构建一份并发布到 GitHub Release。两种触发方式：推送 `v*` 标签；或在 Actions 页面手动运行并填写标签名（标签会自动创建在所选提交上）。手动运行时不填标签则只构建不发布。标签带 `-` 的标记为预发布。
 
 如果只是想全局安装而不需要脱离 Python，可以用 `pipx install .` 或 `uv tool install .`。
 
