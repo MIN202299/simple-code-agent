@@ -152,6 +152,27 @@ def resolve_settings(
     )
 
 
+def parse_token_count(text: str) -> int | None:
+    """Parse a context size such as `128000`, `128,000`, `200k` or `1m`."""
+    text = text.strip().lower().replace(",", "").replace("_", "")
+    factor = 1
+    if text.endswith(("k", "m")):
+        factor = 1_000 if text.endswith("k") else 1_000_000
+        text = text[:-1]
+    try:
+        value = int(float(text) * factor)
+    except ValueError:
+        return None
+    return value if value >= MIN_CONTEXT_WINDOW else None
+
+
+def update_config(path: Path, **changes: Any) -> None:
+    """Change individual settings in the config file, keeping the rest."""
+    config = load_config(path)
+    config.update(changes)
+    save_config(path, config)
+
+
 def mask_key(key: str | None) -> str:
     if not key:
         return "(未设置)"
@@ -179,12 +200,25 @@ def run_setup(path: Path, console: Console) -> bool:
             "api_key": ask("API Key（输入不回显）", "api_key", secret=True),
             "model": ask("模型名", "model"),
         }
+        shown_window = current.get("context_window", DEFAULT_CONTEXT_WINDOW)
+        window_answer = input(
+            f"模型的上下文窗口大小，如 128k、200k、1m [{shown_window}]: "
+        ).strip()
     except (EOFError, KeyboardInterrupt):
         console.print("\n[yellow]已取消，未保存。[/yellow]")
         return False
     for key in ("api", *EXTRA_KEYS):  # settings the wizard does not ask about
         if current.get(key) is not None:
             config[key] = current[key]
+    if window_answer:
+        window = parse_token_count(window_answer)
+        if window is None:
+            console.print(
+                f"[yellow]无法识别的上下文窗口大小 {window_answer!r}（至少 {MIN_CONTEXT_WINDOW}），"
+                "保持原值。[/yellow]"
+            )
+        else:
+            config["context_window"] = window
     if not config["api_key"]:
         console.print("[red]API Key 不能为空，未保存。[/red]")
         return False

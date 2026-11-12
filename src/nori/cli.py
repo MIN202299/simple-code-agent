@@ -37,6 +37,7 @@ from .config import (
     default_config_path,
     load_config,
     mask_key,
+    parse_token_count,
     resolve_settings,
     run_setup,
 )
@@ -137,6 +138,13 @@ def apply_settings(settings: Settings) -> None:
         set_tracing_disabled(True)
 
 
+def _token_count(text: str) -> int:
+    value = parse_token_count(text)
+    if value is None:
+        raise argparse.ArgumentTypeError(f"无法识别的大小 {text!r}，应为 128000、200k、1m 这样的值")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=COMMAND,
@@ -172,9 +180,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--context-window",
-        type=int,
+        type=_token_count,
         metavar="TOKENS",
-        help="模型的上下文窗口大小（默认 128000，可在配置文件中设置）",
+        help="模型的上下文窗口大小，如 128000、200k、1m（默认 128000，可在配置文件中设置）",
     )
     parser.add_argument(
         "--no-auto-compact", action="store_true", help="上下文快满时不自动压缩会话"
@@ -281,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
                 "密钥": mask_key(settings.api_key),
                 "配置": short_path(config_path),
             }
+            session.config_path = config_path
             if resumed is not None:
                 session.resume(resumed)
             if args.prompt:

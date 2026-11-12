@@ -203,6 +203,7 @@ class Session:
         self._usage_reported = False
         self.info: dict[str, str] = {}  # endpoint details shown by /status
         self.pet: Pet | None = None
+        self.config_path: Path | None = None  # where /context saves its setting
 
     def _build_agent(self) -> Agent[AgentContext]:
         return build_agent(

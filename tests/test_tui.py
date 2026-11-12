@@ -184,9 +184,9 @@ def test_slash_menu_commands_and_skills(tmp_path):
     async def scenario(h: Harness):
         tui = h.tui
         h.send("/")
-        await h.until(lambda: len(tui._menu()) == 12)
+        await h.until(lambda: len(tui._menu()) == 13)
         menu = "".join(text for _style, text in tui._menu_text())
-        assert "❯ /help" in menu and "1/12" in menu  # eight rows shown, the list scrolls
+        assert "❯ /help" in menu and "1/13" in menu  # eight rows shown, the list scrolls
         review = tui._menu()[-1]
         assert (review.label, review.description) == ("/review", "review code")
 

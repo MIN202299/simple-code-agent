@@ -13,6 +13,8 @@ from rich.markup import escape
 from rich.text import Text
 
 from .branding import ACCENT, short_path
+from .compact import COMPACT_AT
+from .config import ConfigError, parse_token_count, update_config
 from .pet import art as pet_art
 from .render import format_tokens, shorten
 from .session import Session
@@ -38,6 +40,7 @@ class CommandResult:
 BUILTIN_COMMANDS = [
     Command("help", "显示帮助"),
     Command("clear", "清空对话上下文"),
+    Command("context", "查看或设置模型的上下文窗口大小（如 /context 200k）", takes_arg=True),
     Command("compact", "把对话压缩成摘要以释放上下文（可附带保留重点的说明）", takes_arg=True),
     Command("resume", "列出并恢复之前的会话（/resume <序号>）", takes_arg=True),
     Command("model", "查看或切换模型", takes_arg=True),
@@ -189,6 +192,30 @@ def _resume(session: Session, arg: str, emit: Emit) -> None:
     session.ui.show_history(session.history)
 
 
+def _context(session: Session, arg: str, emit: Emit) -> None:
+    if arg:
+        window = parse_token_count(arg)
+        if window is None:
+            emit(f"[red]无法识别的大小 {escape(arg)}，应为 128000、200k、1m 这样的值。[/red]")
+            return
+        session.context_window = window
+        saved = ""
+        if session.config_path is not None:
+            try:
+                update_config(session.config_path, context_window=window)
+                saved = "，已保存到配置文件"
+            except (ConfigError, OSError):
+                saved = "（仅本次会话有效，写入配置文件失败）"
+        emit(f"[dim]上下文窗口已设为 {window:,} tokens{saved}。[/dim]")
+    threshold = int(session.context_window * COMPACT_AT)
+    emit(
+        f"[dim]窗口 {session.context_window:,} tokens · 已用 {session.context_tokens:,}"
+        f" ({session.context_share:.0%}) · "
+        + (f"达到 {threshold:,} 时自动压缩" if session.auto_compact else "自动压缩已关闭")
+        + "[/dim]"
+    )
+
+
 async def _compact(session: Session, instructions: str, emit: Emit) -> None:
     if not session.history:
         emit("[dim]还没有对话内容，无需压缩。[/dim]")
@@ -216,6 +243,8 @@ async def run_command(session: Session, line: str, emit: Emit) -> CommandResult:
         emit("[dim]上下文已清空。[/dim]")
     elif name == "resume":
         _resume(session, arg, emit)
+    elif name == "context":
+        _context(session, arg, emit)
     elif name == "compact":
         await _compact(session, arg, emit)
     elif name == "model":

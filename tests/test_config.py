@@ -87,7 +87,7 @@ def test_setup_writes_and_updates(tmp_path, monkeypatch):
     path = tmp_path / "config.json"
     console = Console(file=open(tmp_path / "out.txt", "w"))
 
-    answers = iter(["https://x/v1", "my-model"])
+    answers = iter(["https://x/v1", "my-model", "200k"])
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
     monkeypatch.setattr("getpass.getpass", lambda _prompt: "sk-secret-key-0001")
     assert run_setup(path, console) is True
@@ -95,6 +95,7 @@ def test_setup_writes_and_updates(tmp_path, monkeypatch):
         "base_url": "https://x/v1",
         "api_key": "sk-secret-key-0001",
         "model": "my-model",
+        "context_window": 200_000,
     }
 
     # pressing Enter keeps current values; the key is never echoed in prompts
@@ -152,3 +153,49 @@ def test_context_window_and_auto_compact(tmp_path):
     for bad in ({"context_window": 100}, {"context_window": "big"}, {"auto_compact": "yes"}):
         with pytest.raises(ConfigError):
             load_config(write(tmp_path / "bad.json", bad))
+
+
+def test_parse_token_count():
+    from nori.config import parse_token_count
+
+    assert parse_token_count("128000") == 128_000
+    assert parse_token_count(" 128,000 ") == 128_000
+    assert parse_token_count("200k") == 200_000 and parse_token_count("200K") == 200_000
+    assert parse_token_count("1m") == 1_000_000 and parse_token_count("1.5m") == 1_500_000
+    for bad in ("", "big", "100", "-200k", "k"):
+        assert parse_token_count(bad) is None
+
+
+def test_context_command_sets_and_saves_the_window(tmp_path):
+    import asyncio
+
+    from nori.commands import run_command
+    from nori.config import update_config
+    from nori.session import Session
+
+    path = write(tmp_path / "config.json", {"api_key": "k", "model": "m"})
+    session = Session(tmp_path, model="m")
+    session.config_path = path
+    lines: list = []
+
+    def run(line):
+        asyncio.run(run_command(session, line, lines.append))
+
+    run("/context")
+    assert "窗口 128,000 tokens" in lines[-1] and "达到 102,400 时自动压缩" in lines[-1]
+    run("/context 200k")
+    assert session.context_window == 200_000 and "已保存到配置文件" in lines[-2]
+    assert load_config(path) == {"api_key": "k", "model": "m", "context_window": 200_000}
+    run("/context huge")
+    assert "无法识别" in lines[-1] and session.context_window == 200_000
+
+    update_config(path, auto_compact=False)
+    assert load_config(path)["auto_compact"] is False and load_config(path)["api_key"] == "k"
+
+
+def test_cli_accepts_context_sizes_with_suffix():
+    from nori.cli import build_parser
+
+    assert build_parser().parse_args(["--context-window", "200k"]).context_window == 200_000
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--context-window", "lots"])
