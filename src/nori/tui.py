@@ -63,7 +63,8 @@ from .render import (
 from .session import Session
 from .tools import SKIP_DIRS
 
-SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"  # running tool calls
+THINKING_SPINNER = "·✢✳✶✻✽✻✶✳✢"  # the status line
 LIVE_LINES = 12
 MENU_ROWS = 8
 MAX_FILE_MATCHES = 50
@@ -102,7 +103,7 @@ STYLE = Style.from_dict(
         "pet.asleep": "fg:ansibrightblack",
         "spinner": f"fg:{ACCENT}",
         "call": "bold",
-        "status": f"fg:{ACCENT}",
+        "status": "fg:ansiyellow",
         "dim": "fg:ansibrightblack",
         "footer": "fg:ansibrightblack",
         "footer.auto": "fg:ansimagenta bold",
@@ -570,10 +571,7 @@ class Tui:
 
     def _status_text(self) -> StyleAndTextTuples:
         now = time.monotonic()
-        if self.pet.hidden:
-            mark = SPINNER[int(now * 10) % len(SPINNER)]
-        else:
-            mark = petlib.face(self.mood, now)
+        mark = THINKING_SPINNER[int(now * 8) % len(THINKING_SPINNER)]
         details = [format_duration(now - self._turn_started)]
         if self._turn_output_tokens:
             details.append(f"↓ {format_tokens(self._turn_output_tokens)} tokens")
