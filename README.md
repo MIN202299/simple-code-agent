@@ -52,7 +52,7 @@ nori --setup        # 填写 base url、api key、模型
 | `base_url` | API 地址；省略则使用 OpenAI 官方地址 |
 | `model` | 模型名；省略则使用 SDK 默认模型 |
 | `api` | `responses` 或 `chat`。省略时：设置了非 OpenAI 的 `base_url` 用 `chat`，否则用 `responses` |
-| `max_turns` | 单个任务的最大模型轮数（每次模型回复算一轮），默认 200 |
+| `max_turns` | 单个任务的最大模型轮数（每次模型回复算一轮）。TUI 里默认不限；一次性执行和简单模式默认 200 |
 | `context_window` | 模型的上下文窗口大小（token 数），默认 128000。按你所用模型的实际值填写 |
 | `auto_compact` | 上下文快满时是否自动压缩会话，默认 `true` |
 
@@ -91,7 +91,7 @@ nori -m other-model -y        # 临时换模型，并自动批准所有操作
 | `-y, --yes` | 自动批准写文件和执行命令 |
 | `--plain` | 不使用 TUI，改用逐行输出的简单模式 |
 | `--no-mcp` / `--no-skills` | 不加载 MCP 服务器 / skill |
-| `--max-turns` | 单个任务的最大模型轮数，默认 200 |
+| `--max-turns` | 单个任务的最大模型轮数。TUI 默认不限；一次性执行和简单模式默认 200 |
 | `--context-window TOKENS` | 模型的上下文窗口大小，默认 128000 |
 | `--no-auto-compact` | 上下文快满时不自动压缩会话 |
 

@@ -31,6 +31,7 @@ from .branding import (
 )
 from .commands import run_command
 from .config import (
+    UNATTENDED_MAX_TURNS,
     ConfigError,
     Settings,
     default_config_path,
@@ -159,7 +160,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-mcp", action="store_true", help="不加载 MCP 服务器")
     parser.add_argument("--no-skills", action="store_true", help="不加载 skill")
     parser.add_argument(
-        "--max-turns", type=int, help="单个任务的最大模型轮数（默认 200，可在配置文件中设置）"
+        "--max-turns",
+        type=int,
+        help="单个任务的最大模型轮数（TUI 默认不限；一次性执行和简单模式默认 200）",
     )
     parser.add_argument(
         "--context-window",
@@ -234,11 +237,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         try:
             servers = runner.run(connect_mcp(manager, console)) if specs else []
+            use_tui = interactive and not args.plain and not args.prompt
+            unattended_turns = settings.max_turns or UNATTENDED_MAX_TURNS
             session = Session(
                 workspace,
                 model=settings.model,
                 auto_approve=args.yes,
-                max_turns=settings.max_turns,
+                max_turns=settings.max_turns if use_tui else unattended_turns,
                 context_window=settings.context_window,
                 auto_compact=settings.auto_compact,
                 ui=PlainUI(console),
@@ -253,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.prompt:
                 ok = run_plain_turn(runner, session, console, " ".join(args.prompt))
                 return 0 if ok else 1
-            if interactive and not args.plain:
+            if use_tui:
                 from .pet import load_pet
                 from .tui import Tui, history_file
 

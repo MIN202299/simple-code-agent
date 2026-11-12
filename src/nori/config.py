@@ -7,7 +7,6 @@ Settings live in `~/.nori/config.json`:
       "api_key": "sk-...",
       "model": "your-model",
       "api": "chat",
-      "max_turns": 200,
       "context_window": 128000,
       "auto_compact": true
     }
@@ -34,7 +33,9 @@ from .mcp_config import expand_env
 
 CONFIG_KEYS = ("base_url", "api_key", "model", "api")
 EXTRA_KEYS = ("max_turns", "context_window", "auto_compact")
-DEFAULT_MAX_TURNS = 200
+# Turn limit for runs nobody is watching (one-shot and piped). The interactive UI
+# has no limit by default: compaction handles long tasks and Esc stops a runaway one.
+UNATTENDED_MAX_TURNS = 200
 MIN_CONTEXT_WINDOW = 4_000
 APIS = ("responses", "chat")
 OPENAI_HOST = "api.openai.com"
@@ -50,7 +51,7 @@ class Settings:
     base_url: str | None
     model: str | None
     api: str
-    max_turns: int = DEFAULT_MAX_TURNS
+    max_turns: int | None = None  # None: no limit when interactive
     context_window: int = DEFAULT_CONTEXT_WINDOW
     auto_compact: bool = True
 
@@ -142,7 +143,7 @@ def resolve_settings(
         base_url=resolved_base_url,
         model=pick(model, env.get("NORI_MODEL"), config.get("model")),
         api=resolved_api,
-        max_turns=max_turns or config.get("max_turns") or DEFAULT_MAX_TURNS,
+        max_turns=max_turns or config.get("max_turns"),
         context_window=max(
             context_window or config.get("context_window") or DEFAULT_CONTEXT_WINDOW,
             MIN_CONTEXT_WINDOW,

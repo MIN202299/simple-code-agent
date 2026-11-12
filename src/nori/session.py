@@ -24,7 +24,6 @@ from .compact import (
     summarise,
     summary_item,
 )
-from .config import DEFAULT_MAX_TURNS
 from .pet import Pet
 from .render import parse_args, render_call, render_output
 from .skills import Skill
@@ -154,7 +153,7 @@ class Session:
         workspace: Path,
         model: str | Model | None = None,
         auto_approve: bool = False,
-        max_turns: int = DEFAULT_MAX_TURNS,
+        max_turns: int | None = None,
         ui: UI | None = None,
         skills: dict[str, Skill] | None = None,
         mcp_servers: list[MCPServer] | None = None,

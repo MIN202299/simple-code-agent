@@ -123,7 +123,7 @@ def test_cli_reports_missing_key_and_bad_config(tmp_path, monkeypatch, capsys):
 
 
 def test_max_turns(tmp_path):
-    assert resolve_settings({}, {}).max_turns == 200
+    assert resolve_settings({}, {}).max_turns is None  # no limit unless asked for
     path = write(tmp_path / "c.json", {"api_key": "k", "max_turns": 500})
     config = load_config(path)
     assert resolve_settings(config, {}).max_turns == 500

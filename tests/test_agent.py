@@ -331,3 +331,10 @@ def test_running_out_of_turns_keeps_the_work_and_can_continue(tmp_path):
     assert (tmp_path / "3.txt").exists()
     sent = session.agent.model.last_call.input
     assert [i["content"] for i in sent if i.get("role") == "user"] == ["write three files", "继续"]
+
+
+def test_no_turn_limit_by_default(tmp_path):
+    steps = [[function_call("list_dir", {}, call_id=f"c{i}")] for i in range(30)]
+    session, _ = make_session(tmp_path, [*steps, [assistant_message("done")]])
+    assert session.max_turns is None
+    assert asyncio.run(session.run_turn("go")) == "done"
