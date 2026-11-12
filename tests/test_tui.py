@@ -184,9 +184,9 @@ def test_slash_menu_commands_and_skills(tmp_path):
     async def scenario(h: Harness):
         tui = h.tui
         h.send("/")
-        await h.until(lambda: len(tui._menu()) == 11)
+        await h.until(lambda: len(tui._menu()) == 12)
         menu = "".join(text for _style, text in tui._menu_text())
-        assert "❯ /help" in menu and "1/11" in menu  # eight rows shown, the list scrolls
+        assert "❯ /help" in menu and "1/12" in menu  # eight rows shown, the list scrolls
         review = tui._menu()[-1]
         assert (review.label, review.description) == ("/review", "review code")
 
@@ -314,3 +314,28 @@ def test_file_mentions_help_panel_and_pet(tmp_path):
     assert "小黑" in h.text and "下次见" in h.tui.transcript[-1]
     saved = load_pet(pet_file)
     assert (saved.name, saved.tasks, saved.tools) == ("小黑", 1, 1)
+
+
+def test_sub_agent_progress_and_nested_approval(tmp_path):
+    steps = [
+        [function_call("spawn_agent", {"description": "write it", "prompt": "Write."}, call_id="c1")],
+        [function_call("write_file", {"path": "a.txt", "content": "hello"}, call_id="s1")],
+        [assistant_message("REPORT: wrote a.txt")],
+        [assistant_message("done")],
+    ]
+
+    async def scenario(h: Harness):
+        tui = h.tui
+        h.send("delegate" + ENTER)
+        await h.until(lambda: tui._approval is not None)
+        live = "".join(text for _style, text in tui._calls_text())
+        assert "Agent(write it)" in live and "Write(a.txt) · 第 1 次工具调用" in live
+        # the sub-agent's call is not in the live area, so the dialog shows the preview
+        dialog = "".join(text for _style, text in tui._approval_text())
+        assert "Write(a.txt)" in dialog and "+hello" in dialog
+        h.send(ENTER)
+        await h.idle()
+
+    h = run_tui(tmp_path, steps, scenario)
+    assert (tmp_path / "a.txt").read_text() == "hello"
+    assert "● Agent(write it)\n  ⎿  REPORT: wrote a.txt" in h.text and "done" in h.text

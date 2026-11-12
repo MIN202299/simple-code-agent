@@ -41,7 +41,7 @@ from rich.text import Text
 
 from . import __version__
 from . import pet as petlib
-from .branding import ACCENT, APP_NAME, TAGLINE, app_dir, short_path
+from .branding import ACCENT, APP_NAME, COMMAND, TAGLINE, app_dir, short_path
 from .commands import match_commands, run_command
 from .compact import COMPACT_AT
 from .pet import Pet
@@ -54,6 +54,7 @@ from .render import (
     parse_args,
     render_assistant,
     render_call,
+    render_history,
     render_output,
     render_user,
     split_blocks,
@@ -427,13 +428,28 @@ class Tui:
             self.emit(Text("  ✻ 压缩上下文失败，继续使用完整上下文", style="yellow"), gap=True)
         self.app.invalidate()
 
+    def tool_progress(self, call_id: str, text: str) -> None:
+        if call_id in self._calls:
+            self._calls[call_id]["progress"] = text
+            self.app.invalidate()
+
+    def show_history(self, items: list[Any]) -> None:
+        for entry in render_history(items):
+            self.emit(entry, gap=True)
+        self.emit(Text("  ✻ 已恢复会话，可以接着说", style="dim"), gap=True)
+
     async def approve(self, item: ToolApprovalItem) -> str:
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        # Calls made by a sub-agent are not in the live area, so the dialog has to
+        # show what is about to happen itself.
+        args = parse_args(item.arguments)
+        preview = None if item.call_id in self._calls else call_preview(item.tool_name or "", args)
         self._approval = {
             "item": item,
             "future": future,
             "index": 0,
             "opened": time.monotonic(),
+            "preview": self._fragments(preview) if preview is not None else [],
         }
         self.app.invalidate()
         try:
@@ -543,6 +559,8 @@ class Tui:
             if call["preview"]:
                 out.append(("", "\n"))
                 out.extend(call["preview"])
+            if call.get("progress"):
+                out.append(("class:dim", f"\n  ⎿  {call['progress']}"))
         return out
 
     def _live_text(self) -> StyleAndTextTuples:
@@ -641,7 +659,9 @@ class Tui:
             ("", "\n"),
             ("class:approval.title", "─" * self._columns() + "\n"),
             ("class:approval.title", f" 需要确认 · {tool_label(name)}\n"),
-            ("", f"   {call_title(name, parse_args(item.arguments))}\n\n"),
+            ("", f"   {call_title(name, parse_args(item.arguments))}\n"),
+            *approval["preview"],
+            ("", "\n\n" if approval["preview"] else "\n"),
             ("", " 是否允许执行？\n"),
         ]
         for index, label in enumerate(options):
@@ -818,6 +838,8 @@ class Tui:
         text = Text(style="dim")
         text.append("" if self.pet.hidden else f"{petlib.face('sleeping')} ")
         text.append(f"{self.pet.name} 打了个哈欠，下次见。")
+        if session.history and session.store is not None:
+            text.append(f" 恢复本次会话：{COMMAND} --resume {session.session_id}")
         if session.input_tokens or session.output_tokens:
             text.append(
                 f" 本次用量 ↑ {format_tokens(session.input_tokens)}"
@@ -886,10 +908,12 @@ class Tui:
             if result.prompt:  # a skill invoked as /<skill>
                 await self._run_turn(result.prompt)
 
-    async def run(self) -> None:
+    async def run(self, show_resumed: bool = False) -> None:
         output = self.app.output
         output.set_title(f"{APP_NAME} · {self.session.context.workspace.name}")
         self.emit(self._welcome())
+        if show_resumed:
+            self.show_history(self.session.history)
         worker = asyncio.ensure_future(self._worker())
         try:
             await self.app.run_async()

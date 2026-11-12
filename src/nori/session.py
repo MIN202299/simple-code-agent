@@ -13,7 +13,7 @@ from agents.mcp import MCPServer
 from rich.console import Console
 from rich.markup import escape
 
-from .agent import build_agent
+from .agent import build_agent, build_subagent
 from .compact import (
     COMPACT_AT,
     DEFAULT_CONTEXT_WINDOW,
@@ -25,11 +25,13 @@ from .compact import (
     summary_item,
 )
 from .pet import Pet
-from .render import parse_args, render_call, render_output
+from .render import call_title, parse_args, render_call, render_output
 from .skills import Skill
+from .store import TITLE_CHARS, SessionRecord, SessionStore, new_session_id
 from .tools import AgentContext
 
 INTERRUPT_NOTE = "[Request interrupted by user]"
+SUBAGENT_MAX_TURNS = 100
 REJECTION_MESSAGE = "The user rejected this tool call."
 
 
@@ -53,6 +55,12 @@ class UI(Protocol):
 
     def compaction(self, stage: str, before: int = 0, after: int = 0) -> None:
         """Context compaction progress: stage is "start", "done" or "failed"."""
+
+    def tool_progress(self, call_id: str, text: str) -> None:
+        """What a long-running tool call (a sub-agent) is doing right now."""
+
+    def show_history(self, items: list[Any]) -> None:
+        """Display a restored conversation."""
 
     async def approve(self, item: ToolApprovalItem) -> str:
         """Ask the user about a tool call. Returns "yes", "always" or "no"."""
@@ -96,6 +104,13 @@ class PlainUI:
             self.console.print(f"[dim]已压缩上下文：约 {before:,} → {after:,} tokens[/dim]")
         elif stage == "failed":
             self.console.print("[yellow]压缩上下文失败，继续使用完整上下文。[/yellow]")
+
+    def tool_progress(self, call_id: str, text: str) -> None:
+        self.console.print(f"  [dim]│ {escape(text)}[/dim]", highlight=False)
+
+    def show_history(self, items: list[Any]) -> None:
+        turns = sum(1 for item in items if isinstance(item, dict) and item.get("role") == "user")
+        self.console.print(f"[dim]已恢复会话（{turns} 轮对话）。[/dim]")
 
     async def approve(self, item: ToolApprovalItem) -> str:
         return self.approver(item)
@@ -159,10 +174,16 @@ class Session:
         mcp_servers: list[MCPServer] | None = None,
         context_window: int = DEFAULT_CONTEXT_WINDOW,
         auto_compact: bool = True,
+        store: SessionStore | None = None,
     ) -> None:
         self.context = AgentContext(
             workspace=workspace, auto_approve=auto_approve, skills=dict(skills or {})
         )
+        self.context.spawn = self.run_subagent
+        self.store = store  # None: conversations are not saved
+        self.session_id = new_session_id()
+        self._created = ""
+        self._approval_lock = asyncio.Lock()  # sub-agents run in parallel; ask one at a time
         self.model = model
         self.mcp_servers = list(mcp_servers or [])
         self.agent = self._build_agent()
@@ -199,9 +220,112 @@ class Session:
         self.agent = self._build_agent()
 
     def clear(self) -> None:
+        """Start a new conversation. The old one stays on disk and can be resumed."""
         self.history = []
         self.context_tokens = 0
         self._compact_floor = 0
+        self.session_id = new_session_id()
+        self._created = ""
+
+    # ----------------------------------------------------------- persistence
+
+    def _title(self) -> str:
+        for item in self.history:
+            if isinstance(item, dict) and item.get("role") == "user":
+                text = item.get("content")
+                if isinstance(text, str) and not text.startswith(("[The earlier part", "[Request")):
+                    return " ".join(text.split())[:TITLE_CHARS]
+        return ""
+
+    def save(self) -> None:
+        """Persist the conversation so it can be resumed."""
+        if self.store is None or not self.history:
+            return
+        record = SessionRecord(
+            id=self.session_id,
+            workspace=str(self.context.workspace),
+            title=self._title(),
+            model=self.model_name,
+            history=self.history,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            context_tokens=self.context_tokens,
+        )
+        if self._created:
+            record.created = self._created
+        else:
+            self._created = record.created
+        self.store.save(record)
+
+    def resume(self, record: SessionRecord) -> None:
+        """Continue a saved conversation."""
+        self.session_id = record.id
+        self._created = record.created
+        self.history = list(record.history)
+        self.input_tokens = record.input_tokens
+        self.output_tokens = record.output_tokens
+        self.context_tokens = record.context_tokens or estimate_tokens(self.history)
+        self._compact_floor = 0
+        self._usage_reported = False
+
+    # ------------------------------------------------------------- approvals
+
+    async def _decide(self, result: Any) -> Any:
+        """Resolve the pending tool approvals of a paused run; returns its state."""
+        state = result.to_state()
+        for item in result.interruptions:
+            name = item.tool_name or ""
+            async with self._approval_lock:
+                # The SDK also pauses when it had to normalise the arguments (e.g. the
+                # model left out a defaulted one), so honour the session policy here too.
+                if self.context.auto_approve or name in self.context.always_allowed:
+                    decision = "yes"
+                else:
+                    decision = await self.ui.approve(item)
+                if decision == "always":
+                    self.context.always_allowed.add(name)
+            if decision in ("yes", "always"):
+                state.approve(item)
+            else:
+                state.reject(item, rejection_message=REJECTION_MESSAGE)
+        return state
+
+    # ------------------------------------------------------------ sub-agents
+
+    async def run_subagent(self, call_id: str, agent_type: str, prompt: str) -> str:
+        """Run a sub-agent in a fresh context and return its final report."""
+        agent = build_subagent(self.context.workspace, agent_type, self.model, self.mcp_servers)
+        run_input: Any = prompt
+        tool_calls = 0
+        while True:
+            result = Runner.run_streamed(
+                agent, run_input, context=self.context, max_turns=SUBAGENT_MAX_TURNS
+            )
+            try:
+                async for event in result.stream_events():
+                    if event.type != "run_item_stream_event":
+                        continue
+                    if event.item.type == "tool_call_item":
+                        raw = event.item.raw_item
+                        name = getattr(raw, "name", None) or "tool"
+                        title = call_title(name, parse_args(getattr(raw, "arguments", None)))
+                        tool_calls += 1
+                        self.ui.tool_progress(call_id, f"{title} · 第 {tool_calls} 次工具调用")
+                if not result.interruptions:
+                    break
+                run_input = await self._decide(result)
+            except asyncio.CancelledError:
+                result.cancel()
+                raise
+            except MaxTurnsExceeded:
+                return (
+                    f"Error: the sub-agent did not finish within {SUBAGENT_MAX_TURNS} turns. "
+                    "Split the task into smaller parts."
+                )
+        usage = result.context_wrapper.usage
+        self.input_tokens += usage.input_tokens
+        self.output_tokens += usage.output_tokens
+        return str(result.final_output or "(the sub-agent returned no report)")
 
     # ------------------------------------------------------------ compaction
 
@@ -247,6 +371,7 @@ class Session:
         cut, summary = compacted
         self.history = [summary, *self.history[cut:]]
         self.context_tokens = self._compact_floor = estimate_tokens(self.history)
+        self.save()
         self.ui.compaction("done", before, self.context_tokens)
         return before, self.context_tokens
 
@@ -301,21 +426,7 @@ class Session:
                 await self._stream(result, calls)
                 if not result.interruptions:
                     break
-                state = result.to_state()
-                for item in result.interruptions:
-                    name = item.tool_name or ""
-                    # The SDK also pauses when it had to normalise the arguments (e.g.
-                    # the model left out a defaulted one), so honour the policy here too.
-                    if self.context.auto_approve or name in self.context.always_allowed:
-                        decision = "yes"
-                    else:
-                        decision = await self.ui.approve(item)
-                    if decision == "always":
-                        self.context.always_allowed.add(name)
-                    if decision in ("yes", "always"):
-                        state.approve(item)
-                    else:
-                        state.reject(item, rejection_message=REJECTION_MESSAGE)
+                state = await self._decide(result)
             except asyncio.CancelledError:
                 result.cancel()
                 self._keep_partial(result, INTERRUPT_NOTE)
@@ -329,6 +440,7 @@ class Session:
         usage = result.context_wrapper.usage
         self.input_tokens += usage.input_tokens
         self.output_tokens += usage.output_tokens
+        self.save()
         self.ui.turn_done(usage.input_tokens, usage.output_tokens)
         return result.final_output
 
@@ -340,6 +452,7 @@ class Session:
             return
         self._compacted = None
         self.history = [*items, *([{"role": "user", "content": note}] if note else [])]
+        self.save()
 
     async def _stream(self, result: Any, calls: dict[str, tuple[str, dict[str, Any]]]) -> None:
         """Forward streamed text, tool calls and tool results to the UI."""

@@ -7,11 +7,13 @@ import fnmatch
 import os
 import re
 import signal
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from agents import RunContextWrapper, function_tool
+from agents.tool_context import ToolContext
 from typing_extensions import TypedDict
 
 from .skills import Skill
@@ -32,6 +34,8 @@ class AgentContext:
     always_allowed: set[str] = field(default_factory=set)
     skills: dict[str, Skill] = field(default_factory=dict)
     plan: list[dict[str, str]] = field(default_factory=list)
+    # Set by the session: runs a sub-agent and returns its final report.
+    spawn: Callable[[str, str, str], Awaitable[str]] | None = None
 
     def readable_roots(self) -> list[Path]:
         """The workspace plus skill directories, which are readable but not writable."""
@@ -342,6 +346,44 @@ def update_plan(ctx: Ctx, steps: list[PlanStep]) -> str:
     return "\n".join(f"{PLAN_MARKS[p['status']]} {p['step']}" for p in plan)
 
 
+AGENT_TYPES = ("general", "explore")
+
+
+@function_tool(failure_error_function=_tool_error)
+async def spawn_agent(
+    ctx: ToolContext[AgentContext], description: str, prompt: str, agent_type: str = "general"
+) -> str:
+    """Delegate a task to a sub-agent that works in its own, separate context.
+
+    Use it for broad searches and investigations whose intermediate output you
+    do not need, and for independent subtasks; call it several times in one
+    response to run sub-agents in parallel. The sub-agent sees nothing of this
+    conversation, so the prompt must be self-contained: state the goal, what is
+    already known, and exactly what to report back. Only its final report is
+    returned to you; the user does not see it unless you relay it.
+
+    Args:
+        description: Three to five words describing the task, shown to the user.
+        prompt: Complete, self-contained instructions for the sub-agent.
+        agent_type: "general" has every tool and can change files and run commands;
+            "explore" can only read and search, and is the right choice for research.
+    """
+    if agent_type not in AGENT_TYPES:
+        raise ToolError(f"unknown agent_type {agent_type!r}; use one of {', '.join(AGENT_TYPES)}")
+    if not prompt.strip():
+        raise ToolError("prompt must not be empty")
+    if ctx.context.spawn is None:
+        raise ToolError("sub-agents are not available here")
+    return _truncate(await ctx.context.spawn(ctx.tool_call_id, agent_type, prompt))
+
+
+READ_ONLY_TOOLS = [read_file, list_dir, glob_files, grep]
+# What a sub-agent may use: everything except planning and spawning further agents.
+SUBAGENT_TOOLS = {
+    "general": [read_file, write_file, edit_file, list_dir, glob_files, grep, run_shell, load_skill],
+    "explore": READ_ONLY_TOOLS,
+}
+
 ALL_TOOLS = [
     read_file,
     write_file,
@@ -352,4 +394,5 @@ ALL_TOOLS = [
     run_shell,
     load_skill,
     update_plan,
+    spawn_agent,
 ]

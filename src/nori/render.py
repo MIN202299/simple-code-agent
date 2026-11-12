@@ -37,6 +37,7 @@ TOOL_TITLES = {
     "grep": ("Grep", "pattern"),
     "run_shell": ("Bash", "command"),
     "load_skill": ("Skill", "name"),
+    "spawn_agent": ("Agent", "description"),
 }
 PLAN_TITLE = "Update Todos"
 
@@ -258,6 +259,49 @@ def render_assistant(markdown: str, first: bool = True) -> RenderableType:
     grid.add_column(ratio=1)
     grid.add_row(Text(BULLET if first else " "), ChatMarkdown(markdown, code_theme="ansi_dark"))
     return grid
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(part.get("text", "")) for part in content if isinstance(part, dict)
+        ).strip()
+    return ""
+
+
+def render_history(items: list[Any], limit: int = 30) -> list[RenderableType]:
+    """A restored conversation as transcript entries; only the last `limit` are shown."""
+    entries: list[RenderableType] = []
+    calls: dict[str, tuple[str, dict[str, Any]]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        kind, role = item.get("type"), item.get("role")
+        if kind == "function_call":
+            calls[item.get("call_id", "")] = (item.get("name", "tool"), parse_args(item.get("arguments")))
+        elif kind == "function_call_output":
+            name, args = calls.get(item.get("call_id", ""), ("tool", {}))
+            status = "error" if is_error(item.get("output")) else "ok"
+            output = render_output(name, args, item.get("output"))
+            entries.append(Group(render_call(name, args, status), output))
+        elif role == "user":
+            text = _message_text(item.get("content"))
+            if text.startswith("[The earlier part of this conversation was compacted"):
+                entries.append(Text("  ✻ 更早的对话已压缩为摘要", style="dim"))
+            elif text.startswith("[Request interrupted"):
+                entries.append(Text("  ⎿  已中断", style="red"))
+            elif text:
+                entries.append(render_user(text))
+        elif role == "assistant":
+            text = _message_text(item.get("content"))
+            if text:
+                entries.append(render_assistant(text))
+    hidden = len(entries) - limit
+    if hidden > 0:
+        entries = [Text(f"  … 省略了更早的 {hidden} 条记录", style="dim"), *entries[-limit:]]
+    return entries
 
 
 def split_blocks(text: str) -> tuple[list[str], str]:

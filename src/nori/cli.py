@@ -29,7 +29,7 @@ from .branding import (
     migrate_legacy_dir,
     short_path,
 )
-from .commands import run_command
+from .commands import describe_session, run_command
 from .config import (
     UNATTENDED_MAX_TURNS,
     ConfigError,
@@ -43,6 +43,7 @@ from .config import (
 from .mcp_config import MCPConfigError, MCPServerSpec, build_server, load_mcp_specs
 from .session import PlainUI, Session
 from .skills import discover_skills
+from .store import SessionStore
 
 
 def run_plain_turn(runner: asyncio.Runner, session: Session, console: Console, text: str) -> bool:
@@ -152,6 +153,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", help="配置文件路径（默认 ~/.nori/config.json）")
     parser.add_argument("--setup", action="store_true", help="交互式创建或修改配置文件后退出")
+    parser.add_argument("-c", "--continue", dest="resume_latest", action="store_true",
+                        help="继续这个工作区最近的一次会话")
+    parser.add_argument("-r", "--resume", metavar="ID", help="恢复指定的会话（ID 可只写开头几位）")
+    parser.add_argument("--list-sessions", action="store_true", help="列出这个工作区保存的会话后退出")
+    parser.add_argument("--no-save", action="store_true", help="不保存本次会话")
     parser.add_argument("-C", "--cwd", default=".", help="工作区目录（默认当前目录）")
     parser.add_argument(
         "-y", "--yes", action="store_true", help="自动批准写文件和执行命令，不再逐次确认"
@@ -193,6 +199,25 @@ def main(argv: list[str] | None = None) -> int:
     if not workspace.is_dir():
         console.print(f"[red]工作区不存在: {workspace}[/red]")
         return 2
+
+    store = SessionStore()
+    if args.list_sessions:
+        records = store.list(workspace, limit=50)
+        for record in records:
+            console.print(f"{record.id}  {escape(describe_session(record))}", highlight=False)
+        if not records:
+            console.print("[dim]这个工作区还没有保存的会话。[/dim]")
+        return 0
+    resumed = None
+    if args.resume:
+        resumed = store.load(args.resume)
+        if resumed is None:
+            console.print(f"[red]找不到会话 {escape(args.resume)}。用 --list-sessions 查看。[/red]")
+            return 2
+    elif args.resume_latest:
+        resumed = store.latest(workspace)
+        if resumed is None:
+            console.print("[dim]这个工作区没有可继续的会话，开始新会话。[/dim]")
 
     try:
         config = load_config(config_path)
@@ -246,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_turns=settings.max_turns if use_tui else unattended_turns,
                 context_window=settings.context_window,
                 auto_compact=settings.auto_compact,
+                store=None if args.no_save else store,
                 ui=PlainUI(console),
                 skills=skills,
                 mcp_servers=servers,
@@ -255,6 +281,8 @@ def main(argv: list[str] | None = None) -> int:
                 "密钥": mask_key(settings.api_key),
                 "配置": short_path(config_path),
             }
+            if resumed is not None:
+                session.resume(resumed)
             if args.prompt:
                 ok = run_plain_turn(runner, session, console, " ".join(args.prompt))
                 return 0 if ok else 1
@@ -262,8 +290,11 @@ def main(argv: list[str] | None = None) -> int:
                 from .pet import load_pet
                 from .tui import Tui, history_file
 
-                runner.run(Tui(session, pet=load_pet(), history=history_file()).run())
+                tui = Tui(session, pet=load_pet(), history=history_file())
+                runner.run(tui.run(show_resumed=resumed is not None))
             else:
+                if resumed is not None:
+                    session.ui.show_history(session.history)
                 plain_repl(runner, session, console)
         finally:
             if specs:

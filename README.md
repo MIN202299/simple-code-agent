@@ -13,6 +13,8 @@ Nori 是一个基于 [OpenAI Agents SDK](https://github.com/openai/openai-agents
 - **TUI**：底部固定输入框，流式 Markdown 渲染，带状态的工具调用与 diff 预览，审批对话框，`/` 命令和 `@` 文件补全
 - **宠物 Nori**：一只会随 agent 状态变表情、陪你干活会升级的小猫
 - **上下文管理**：可配置上下文窗口大小，支持 `/compact` 手动压缩和快满时自动压缩
+- **会话恢复**：对话自动保存，`nori -c` 继续上一次，`/resume` 挑一个恢复
+- **子 agent**：把搜索、调研或独立的子任务交给拥有独立上下文的子 agent，可并行
 - **可打包**：一条命令打成不依赖 Python 的单文件可执行程序
 - **配置文件**：在 `~/.nori/config.json` 中配置 base url、api key 和模型，首次运行有交互式向导
 - 内置工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`glob_files`、`grep`、`run_shell`
@@ -26,7 +28,9 @@ Nori 是一个基于 [OpenAI Agents SDK](https://github.com/openai/openai-agents
 
 ## 安装
 
-需要 Python 3.11+（或者直接用[打包好的可执行程序](#打包成可执行程序)）。
+**下载可执行程序**（不需要 Python）：到 [Releases](https://github.com/MIN202299/simple-code-agent/releases) 页面下载对应系统的文件，改名为 `nori` 放进 `PATH`。macOS / Linux 上需要先 `chmod +x nori`；macOS 首次运行如被拦截，执行 `xattr -d com.apple.quarantine nori`。
+
+**从源码安装**（需要 Python 3.11+）：
 
 ```bash
 pip install -e .          # 或: uv pip install -e .
@@ -87,6 +91,10 @@ nori -m other-model -y        # 临时换模型，并自动批准所有操作
 | `--api {responses,chat}` | 使用哪种 API |
 | `--config PATH` | 配置文件路径 |
 | `--setup` | 交互式创建或修改配置文件后退出 |
+| `-c, --continue` | 继续这个工作区最近的一次会话 |
+| `-r, --resume ID` | 恢复指定的会话（ID 可只写开头几位） |
+| `--list-sessions` | 列出这个工作区保存的会话后退出 |
+| `--no-save` | 不保存本次会话 |
 | `-C, --cwd` | 工作区目录，默认当前目录 |
 | `-y, --yes` | 自动批准写文件和执行命令 |
 | `--plain` | 不使用 TUI，改用逐行输出的简单模式 |
@@ -100,7 +108,7 @@ nori -m other-model -y        # 临时换模型，并自动批准所有操作
 ## TUI
 
 ```
-╭─ Nori v0.3.0 ──────────────────────────────────────────╮
+╭─ Nori v0.0.1-beta-1 ──────────────────────────────────────────╮
 │                                                        │
 │   /\_/\ ♪    终端里的 AI 编程搭档                       │
 │  ( ^.^ )                                               │
@@ -161,6 +169,7 @@ nori -m other-model -y        # 临时换模型，并自动批准所有操作
 | --- | --- |
 | `/help` | 显示帮助 |
 | `/clear` | 清空对话上下文 |
+| `/resume [序号]` | 列出这个工作区之前的会话；带序号则恢复那一个 |
 | `/compact [说明]` | 把对话压缩成摘要以释放上下文，可附带要重点保留什么 |
 | `/model [name]` | 查看或切换模型（仅本次会话） |
 | `/status` | 查看模型、接口、上下文大小和累计用量 |
@@ -170,6 +179,38 @@ nori -m other-model -y        # 临时换模型，并自动批准所有操作
 | `/mcp` | 列出已连接的 MCP 服务器及其工具 |
 | `/pet` | 看看你的宠物 |
 | `/exit` | 退出 |
+
+## 会话恢复
+
+每轮对话结束后（包括被中断时），会话自动保存到 `~/.nori/sessions/`。
+
+```bash
+nori -c                    # 继续这个工作区最近的一次会话
+nori --list-sessions       # 查看保存的会话
+nori -r 20261112-0813      # 按 ID 恢复，写开头几位即可
+nori -c "接着把测试补完"    # 一次性执行时同样可用
+```
+
+- 在界面里输入 `/resume` 列出之前的会话，`/resume 2` 恢复第 2 个。恢复时会重放最近的对话记录。
+- 退出时会提示恢复本次会话的命令。
+- `/clear` 开始一个新会话，旧会话仍然保留，可以再恢复。
+- 恢复的是对话上下文，不是文件：期间你对代码的改动不会被撤销，模型看到的文件内容可能已经过时。
+- 会话文件是明文，包含模型读过的文件内容和命令输出。不想保存就加 `--no-save`；删除 `~/.nori/sessions/` 下的文件即可清理。
+
+## 子 agent
+
+模型可以用 `spawn_agent` 工具把一件事交给子 agent。子 agent 从一份独立的上下文开始，做完只把最终报告交回，中间读过的文件、搜索结果不会占用主对话的上下文。
+
+| 类型 | 能做什么 | 适合 |
+| --- | --- | --- |
+| `explore` | 只能读文件和搜索 | 在大代码库里找东西、调研一个问题 |
+| `general` | 全部工具，可改文件、跑命令 | 相互独立的子任务 |
+
+- 一次回复里发起多个子 agent 时它们并行运行。
+- 界面上显示为 `Agent(任务描述)`，下方实时显示它正在调用的工具。
+- 子 agent 改文件、跑命令同样需要你确认，对话框里会附带 diff。
+- 子 agent 看不到主对话，也不能再派生子 agent；单个子 agent 最多 100 轮，且没有自动压缩。
+- 什么时候用由模型自己判断，你也可以直接说"用子 agent 去查一下……"。
 
 ## 上下文管理
 
@@ -290,7 +331,7 @@ python scripts/build.py --onedir   # 文件夹：dist/nori/，启动更快
 - 产物不依赖 Python，拷到 `PATH` 里的任意目录就能用（例如 `/usr/local/bin/nori`）。
 - PyInstaller 不能交叉编译：在哪个系统和 CPU 上构建，产物就只能在那上面运行。
 - 单文件版每次启动要先解压，会慢几秒；介意的话用 `--onedir`。
-- `.github/workflows/release.yml` 会在推送 `v*` 标签时为 Linux、macOS、Windows 各构建一份并发布到 GitHub Release，也可以在 Actions 页面手动触发。
+- `.github/workflows/release.yml` 会在推送 `v*` 标签时为 Linux、macOS、Windows 各构建一份并发布到 GitHub Release（标签带 `-` 的标记为预发布）；在 Actions 页面手动触发则只构建不发布。
 
 如果只是想全局安装而不需要脱离 Python，可以用 `pipx install .` 或 `uv tool install .`。
 
@@ -304,6 +345,7 @@ src/nori/
   render.py      # 工具调用、结果、Markdown 的显示格式
   session.py     # 对话与运行循环、审批流程、中断处理
   compact.py     # 会话压缩：切分位置、摘要生成
+  store.py       # 会话存盘与恢复
   commands.py    # 斜杠命令
   config.py      # 配置文件与设置向导
   branding.py    # 应用名、主题色、用户目录

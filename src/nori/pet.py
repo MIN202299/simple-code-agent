@@ -32,6 +32,7 @@ TOOL_VERBS = {
     "list_dir": ("巡视目录",),
     "load_skill": ("学习新技能",),
     "update_plan": ("整理计划",),
+    "spawn_agent": ("派出小伙伴", "召唤分身"),
 }
 DEFAULT_TOOL_VERBS = ("使用工具", "忙活中")
 WRITING_VERBS = ("回复中", "组织语言", "喵喵说明")

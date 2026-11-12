@@ -17,6 +17,7 @@ from .pet import art as pet_art
 from .render import format_tokens, shorten
 from .session import Session
 from .skills import Skill
+from .store import SessionRecord
 
 Emit = Callable[[Any], None]
 
@@ -38,6 +39,7 @@ BUILTIN_COMMANDS = [
     Command("help", "显示帮助"),
     Command("clear", "清空对话上下文"),
     Command("compact", "把对话压缩成摘要以释放上下文（可附带保留重点的说明）", takes_arg=True),
+    Command("resume", "列出并恢复之前的会话（/resume <序号>）", takes_arg=True),
     Command("model", "查看或切换模型", takes_arg=True),
     Command("skills", "列出可用的 skill"),
     Command("mcp", "列出已连接的 MCP 服务器及其工具"),
@@ -157,6 +159,36 @@ def _pet(session: Session, arg: str, emit: Emit) -> None:
         emit(Text.assemble("  ", (art_line, ACCENT), "  ", fact))
 
 
+def describe_session(record: SessionRecord) -> str:
+    when = record.updated.replace("T", " ")[:16]
+    return f"{when} · {record.turns} 轮 · {record.title or '(无标题)'}"
+
+
+def _resume(session: Session, arg: str, emit: Emit) -> None:
+    if session.store is None:
+        emit("[dim]会话保存已关闭。[/dim]")
+        return
+    records = [r for r in session.store.list(session.context.workspace) if r.id != session.session_id]
+    if not arg:
+        if not records:
+            emit("[dim]这个工作区还没有可恢复的会话。[/dim]")
+            return
+        for number, record in enumerate(records, 1):
+            emit(Text.assemble("  ", (f"{number:>2}. ", "bold"), describe_session(record)))
+        emit("[dim]  输入 /resume <序号> 恢复。[/dim]")
+        return
+    record = None
+    if arg.isdigit() and 1 <= int(arg) <= len(records):
+        record = records[int(arg) - 1]
+    elif not arg.isdigit():
+        record = session.store.load(arg)
+    if record is None:
+        emit(f"[red]找不到会话 {escape(arg)}。[/red]")
+        return
+    session.resume(record)
+    session.ui.show_history(session.history)
+
+
 async def _compact(session: Session, instructions: str, emit: Emit) -> None:
     if not session.history:
         emit("[dim]还没有对话内容，无需压缩。[/dim]")
@@ -182,6 +214,8 @@ async def run_command(session: Session, line: str, emit: Emit) -> CommandResult:
     elif name == "clear":
         session.clear()
         emit("[dim]上下文已清空。[/dim]")
+    elif name == "resume":
+        _resume(session, arg, emit)
     elif name == "compact":
         await _compact(session, arg, emit)
     elif name == "model":

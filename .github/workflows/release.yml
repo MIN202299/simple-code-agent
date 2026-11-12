@@ -1,5 +1,7 @@
 name: Release
 
+# Builds standalone executables. A pushed v* tag also publishes them as a GitHub
+# Release; a manual run only builds and uploads them as workflow artifacts.
 on:
   push:
     tags: ["v*"]
@@ -9,7 +11,18 @@ permissions:
   contents: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
   build:
+    needs: test
     strategy:
       fail-fast: false
       matrix:
@@ -30,9 +43,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: pip install -e ".[dev,build]"
-      - name: Test
-        run: pytest -q
+        run: pip install -e ".[build]"
       - name: Build
         run: python scripts/build.py
       - name: Rename
@@ -47,3 +58,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/${{ matrix.asset }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nori-cli"
-version = "0.4.0"
+version = "0.0.1b1"
 description = "Nori: a coding agent for the terminal, built on the OpenAI Agents SDK"
 readme = "README.md"
 requires-python = ">=3.11"
