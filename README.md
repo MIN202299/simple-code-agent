@@ -12,6 +12,7 @@ Nori 是一个基于 [OpenAI Agents SDK](https://github.com/openai/openai-agents
 
 - **TUI**：底部固定输入框，流式 Markdown 渲染，带状态的工具调用与 diff 预览，审批对话框，`/` 命令和 `@` 文件补全
 - **宠物 Nori**：一只会随 agent 状态变表情、陪你干活会升级的小猫
+- **上下文管理**：可配置上下文窗口大小，支持 `/compact` 手动压缩和快满时自动压缩
 - **可打包**：一条命令打成不依赖 Python 的单文件可执行程序
 - **配置文件**：在 `~/.nori/config.json` 中配置 base url、api key 和模型，首次运行有交互式向导
 - 内置工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`glob_files`、`grep`、`run_shell`
@@ -52,6 +53,8 @@ nori --setup        # 填写 base url、api key、模型
 | `model` | 模型名；省略则使用 SDK 默认模型 |
 | `api` | `responses` 或 `chat`。省略时：设置了非 OpenAI 的 `base_url` 用 `chat`，否则用 `responses` |
 | `max_turns` | 单个任务的最大模型轮数（每次模型回复算一轮），默认 200 |
+| `context_window` | 模型的上下文窗口大小（token 数），默认 128000。按你所用模型的实际值填写 |
+| `auto_compact` | 上下文快满时是否自动压缩会话，默认 `true` |
 
 - `nori --setup` 会交互式地创建或修改这个文件（Key 输入不回显，文件权限为 600）。
 - 没有配置 Key 时，首次启动会自动进入这个向导。
@@ -61,7 +64,7 @@ nori --setup        # 填写 base url、api key、模型
 
 优先级从高到低：
 
-1. 命令行参数 `--model`、`--base-url`、`--api`、`--max-turns`
+1. 命令行参数 `--model`、`--base-url`、`--api`、`--max-turns`、`--context-window`、`--no-auto-compact`
 2. 环境变量 `NORI_MODEL`、`NORI_API`
 3. 配置文件
 4. 通用环境变量 `OPENAI_API_KEY`、`OPENAI_BASE_URL`
@@ -89,6 +92,8 @@ nori -m other-model -y        # 临时换模型，并自动批准所有操作
 | `--plain` | 不使用 TUI，改用逐行输出的简单模式 |
 | `--no-mcp` / `--no-skills` | 不加载 MCP 服务器 / skill |
 | `--max-turns` | 单个任务的最大模型轮数，默认 200 |
+| `--context-window TOKENS` | 模型的上下文窗口大小，默认 128000 |
+| `--no-auto-compact` | 上下文快满时不自动压缩会话 |
 
 标准输入或输出不是终端时（例如管道），自动使用简单模式。
 
@@ -156,6 +161,7 @@ nori -m other-model -y        # 临时换模型，并自动批准所有操作
 | --- | --- |
 | `/help` | 显示帮助 |
 | `/clear` | 清空对话上下文 |
+| `/compact [说明]` | 把对话压缩成摘要以释放上下文，可附带要重点保留什么 |
 | `/model [name]` | 查看或切换模型（仅本次会话） |
 | `/status` | 查看模型、接口、上下文大小和累计用量 |
 | `/yes` | 开关自动批准 |
@@ -164,6 +170,17 @@ nori -m other-model -y        # 临时换模型，并自动批准所有操作
 | `/mcp` | 列出已连接的 MCP 服务器及其工具 |
 | `/pet` | 看看你的宠物 |
 | `/exit` | 退出 |
+
+## 上下文管理
+
+模型一次能看到的内容有上限（上下文窗口）。长任务里读过的文件、命令输出会不断累积，Nori 用压缩来避免撞上这个上限：
+
+- **窗口大小**：用配置文件的 `context_window` 或 `--context-window` 告诉 Nori 你的模型窗口有多大。底栏实时显示当前占用，如 `上下文 34k (27%)`，达到 80% 时变色。
+- **自动压缩**：占用达到窗口的 80% 时，Nori 让模型把较早的对话写成摘要并替换掉原文，最近的一部分（最多 20k token，不超过窗口的 20%）原样保留。任务进行到一半也会触发，压缩完接着干，不需要你介入。
+- **手动压缩**：`/compact` 立即把整个对话压成摘要；可以附带说明，例如 `/compact 重点保留数据库迁移的进度`。
+- **摘要的内容**：目标与约束、已完成的工作（文件、命令及结果）、关键发现、剩余工作和下一步。
+- 压缩会多花一次模型调用；摘要不可能保留全部细节，压缩后模型可能需要重新读某些文件。用 `--no-auto-compact` 或 `"auto_compact": false` 可以关掉自动压缩。
+- 占用量优先取服务端返回的 token 用量；服务端不返回用量时按字符数估算，数字只是近似值。
 
 ## 宠物
 
@@ -286,6 +303,7 @@ src/nori/
   pet.py         # 宠物的表情、台词和成长
   render.py      # 工具调用、结果、Markdown 的显示格式
   session.py     # 对话与运行循环、审批流程、中断处理
+  compact.py     # 会话压缩：切分位置、摘要生成
   commands.py    # 斜杠命令
   config.py      # 配置文件与设置向导
   branding.py    # 应用名、主题色、用户目录

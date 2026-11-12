@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 APP_NAME = "Nori"
@@ -11,6 +12,12 @@ ACCENT = "#5fd7af"  # brand colour, used for the pet and highlights
 
 APP_DIR_NAME = ".nori"
 LEGACY_DIR_NAME = ".code_agent"  # the directory used before the rename
+
+
+def short_path(path: Path) -> str:
+    """A path for display, with the home directory abbreviated to `~`."""
+    text, home = str(path), str(Path.home())
+    return "~" + text[len(home) :] if text == home or text.startswith(home + os.sep) else text
 
 
 def app_dir(home: Path | None = None) -> Path:

@@ -7,7 +7,9 @@ Settings live in `~/.nori/config.json`:
       "api_key": "sk-...",
       "model": "your-model",
       "api": "chat",
-      "max_turns": 200
+      "max_turns": 200,
+      "context_window": 128000,
+      "auto_compact": true
     }
 
 Only the user-level file is read. A project-level file is deliberately not
@@ -27,10 +29,13 @@ from typing import Any
 from rich.console import Console
 
 from .branding import APP_NAME, app_dir
+from .compact import DEFAULT_CONTEXT_WINDOW
 from .mcp_config import expand_env
 
 CONFIG_KEYS = ("base_url", "api_key", "model", "api")
+EXTRA_KEYS = ("max_turns", "context_window", "auto_compact")
 DEFAULT_MAX_TURNS = 200
+MIN_CONTEXT_WINDOW = 4_000
 APIS = ("responses", "chat")
 OPENAI_HOST = "api.openai.com"
 
@@ -46,6 +51,8 @@ class Settings:
     model: str | None
     api: str
     max_turns: int = DEFAULT_MAX_TURNS
+    context_window: int = DEFAULT_CONTEXT_WINDOW
+    auto_compact: bool = True
 
 
 def default_config_path(env: Mapping[str, str] | None = None, home: Path | None = None) -> Path:
@@ -75,18 +82,25 @@ def load_config(path: Path) -> dict[str, Any]:
         config[key] = expand_env(value.strip())
     if "api" in config and config["api"] not in APIS:
         raise ConfigError(f"{path}: api 必须是 {' 或 '.join(APIS)}")
-    max_turns = data.get("max_turns")
-    if max_turns is not None:
-        if isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns < 1:
-            raise ConfigError(f"{path}: max_turns 必须是正整数")
-        config["max_turns"] = max_turns
+    for key, minimum in (("max_turns", 1), ("context_window", MIN_CONTEXT_WINDOW)):
+        value = data.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise ConfigError(f"{path}: {key} 必须是不小于 {minimum} 的整数")
+        config[key] = value
+    if data.get("auto_compact") is not None:
+        if not isinstance(data["auto_compact"], bool):
+            raise ConfigError(f"{path}: auto_compact 必须是 true 或 false")
+        config["auto_compact"] = data["auto_compact"]
     return config
 
 
 def save_config(path: Path, config: Mapping[str, Any]) -> None:
     """Write the config file, readable only by the owner since it holds a key."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = {key: config[key] for key in (*CONFIG_KEYS, "max_turns") if config.get(key)}
+    data = {key: config[key] for key in (*CONFIG_KEYS, *EXTRA_KEYS) if config.get(key) is not None}
+    data = {key: value for key, value in data.items() if value != ""}
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as file:
         json.dump(data, file, ensure_ascii=False, indent=2)
@@ -102,6 +116,8 @@ def resolve_settings(
     base_url: str | None = None,
     api: str | None = None,
     max_turns: int | None = None,
+    context_window: int | None = None,
+    auto_compact: bool | None = None,
 ) -> Settings:
     """Combine sources. Precedence: command line > NORI_* > config file > OPENAI_*.
 
@@ -127,6 +143,11 @@ def resolve_settings(
         model=pick(model, env.get("NORI_MODEL"), config.get("model")),
         api=resolved_api,
         max_turns=max_turns or config.get("max_turns") or DEFAULT_MAX_TURNS,
+        context_window=max(
+            context_window or config.get("context_window") or DEFAULT_CONTEXT_WINDOW,
+            MIN_CONTEXT_WINDOW,
+        ),
+        auto_compact=config.get("auto_compact", True) if auto_compact is None else auto_compact,
     )
 
 
@@ -160,8 +181,8 @@ def run_setup(path: Path, console: Console) -> bool:
     except (EOFError, KeyboardInterrupt):
         console.print("\n[yellow]已取消，未保存。[/yellow]")
         return False
-    for key in ("api", "max_turns"):  # settings the wizard does not ask about
-        if current.get(key):
+    for key in ("api", *EXTRA_KEYS):  # settings the wizard does not ask about
+        if current.get(key) is not None:
             config[key] = current[key]
     if not config["api_key"]:
         console.print("[red]API Key 不能为空，未保存。[/red]")

@@ -41,8 +41,9 @@ from rich.text import Text
 
 from . import __version__
 from . import pet as petlib
-from .branding import ACCENT, APP_NAME, TAGLINE, app_dir
+from .branding import ACCENT, APP_NAME, TAGLINE, app_dir, short_path
 from .commands import match_commands, run_command
+from .compact import COMPACT_AT
 from .pet import Pet
 from .render import (
     call_preview,
@@ -143,11 +144,6 @@ def git_branch(workspace: Path) -> str:
     return head.removeprefix("ref: refs/heads/") if head.startswith("ref:") else head[:7]
 
 
-def short_path(path: Path) -> str:
-    text, home = str(path), str(Path.home())
-    return "~" + text[len(home) :] if text == home or text.startswith(home + os.sep) else text
-
-
 class Tui:
     """The interactive front end. Implements the `UI` protocol of `Session`."""
 
@@ -184,6 +180,7 @@ class Tui:
         self._show_help = False
         self._exit_armed_at = 0.0
         self._closed = False
+        self._compacting = False
         self._last_activity = time.monotonic()
         self._last_result: tuple[str, float] = ("", 0.0)
         self._files: tuple[float, list[str]] = (0.0, [])
@@ -411,6 +408,25 @@ class Tui:
     def usage(self, input_tokens: int, output_tokens: int) -> None:
         self._turn_output_tokens += output_tokens
 
+    def compaction(self, stage: str, before: int = 0, after: int = 0) -> None:
+        if stage == "start":
+            self._compacting = True
+            self._verb = "整理记忆，压缩上下文"
+        else:
+            self._compacting = False
+            self._verb = petlib.verb("thinking")
+        if stage == "done":
+            self.emit(
+                Text(
+                    f"  ✻ 已压缩上下文：约 {format_tokens(before)} → {format_tokens(after)} tokens",
+                    style="dim",
+                ),
+                gap=True,
+            )
+        elif stage == "failed":
+            self.emit(Text("  ✻ 压缩上下文失败，继续使用完整上下文", style="yellow"), gap=True)
+        self.app.invalidate()
+
     async def approve(self, item: ToolApprovalItem) -> str:
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._approval = {
@@ -498,7 +514,9 @@ class Tui:
                 ),
                 ConditionalContainer(
                     Window(FormattedTextControl(self._status_text), height=2),
-                    filter=Condition(lambda: self.busy and self._approval is None),
+                    filter=Condition(
+                        lambda: (self.busy or self._compacting) and self._approval is None
+                    ),
                 ),
                 ConditionalContainer(
                     live(self._queued_text), filter=Condition(lambda: bool(self._queue))
@@ -569,12 +587,16 @@ class Tui:
 
     def _footer_right_text(self) -> StyleAndTextTuples:
         session = self.session
-        parts = [session.model_name]
+        out: StyleAndTextTuples = [("class:footer", session.model_name)]
         if session.context_tokens:
-            parts.append(f"上下文 {format_tokens(session.context_tokens)}")
+            share = session.context_share
+            style = "class:footer.notice" if share >= COMPACT_AT else "class:footer"
+            out.append(("class:footer", " · "))
+            out.append((style, f"上下文 {format_tokens(session.context_tokens)} ({share:.0%})"))
         if self._branch:
-            parts.append(f"⎇ {self._branch}")
-        return [("class:footer", " · ".join(parts) + "  ")]
+            out.append(("class:footer", f" · ⎇ {self._branch}"))
+        out.append(("", "  "))
+        return out
 
     def _help_text(self) -> StyleAndTextTuples:
         out: StyleAndTextTuples = []
@@ -856,6 +878,7 @@ class Tui:
             if not text.startswith("/"):
                 await self._run_turn(text)
                 continue
+            self._turn_started = time.monotonic()  # for the status line of /compact
             result = await run_command(self.session, text, self.emit)
             if result.exit:
                 self.app.exit()

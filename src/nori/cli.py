@@ -21,7 +21,14 @@ from rich.console import Console
 from rich.markup import escape
 
 from . import __version__
-from .branding import APP_NAME, COMMAND, LEGACY_DIR_NAME, TAGLINE, migrate_legacy_dir
+from .branding import (
+    APP_NAME,
+    COMMAND,
+    LEGACY_DIR_NAME,
+    TAGLINE,
+    migrate_legacy_dir,
+    short_path,
+)
 from .commands import run_command
 from .config import (
     ConfigError,
@@ -154,6 +161,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-turns", type=int, help="单个任务的最大模型轮数（默认 200，可在配置文件中设置）"
     )
+    parser.add_argument(
+        "--context-window",
+        type=int,
+        metavar="TOKENS",
+        help="模型的上下文窗口大小（默认 128000，可在配置文件中设置）",
+    )
+    parser.add_argument(
+        "--no-auto-compact", action="store_true", help="上下文快满时不自动压缩会话"
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -194,6 +210,8 @@ def main(argv: list[str] | None = None) -> int:
             base_url=args.base_url,
             api=args.api,
             max_turns=args.max_turns,
+            context_window=args.context_window,
+            auto_compact=False if args.no_auto_compact else None,
         )
     except ConfigError as exc:
         console.print(f"[red]配置有误: {escape(str(exc))}[/red]")
@@ -221,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
                 model=settings.model,
                 auto_approve=args.yes,
                 max_turns=settings.max_turns,
+                context_window=settings.context_window,
+                auto_compact=settings.auto_compact,
                 ui=PlainUI(console),
                 skills=skills,
                 mcp_servers=servers,
@@ -228,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
             session.info = {
                 "接口": f"{settings.base_url or 'OpenAI'} · {settings.api}",
                 "密钥": mask_key(settings.api_key),
-                "配置": str(config_path),
+                "配置": short_path(config_path),
             }
             if args.prompt:
                 ok = run_plain_turn(runner, session, console, " ".join(args.prompt))

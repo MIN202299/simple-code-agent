@@ -133,3 +133,22 @@ def test_max_turns(tmp_path):
     for bad in (0, -1, "many", True, 1.5):
         with pytest.raises(ConfigError):
             load_config(write(tmp_path / "bad.json", {"max_turns": bad}))
+
+
+def test_context_window_and_auto_compact(tmp_path):
+    defaults = resolve_settings({}, {})
+    assert (defaults.context_window, defaults.auto_compact) == (128_000, True)
+
+    path = write(tmp_path / "c.json", {"api_key": "k", "context_window": 200_000, "auto_compact": False})
+    config = load_config(path)
+    settings = resolve_settings(config, {})
+    assert (settings.context_window, settings.auto_compact) == (200_000, False)
+    assert resolve_settings(config, {}, context_window=32_000).context_window == 32_000
+    assert resolve_settings({}, {}, auto_compact=False).auto_compact is False
+
+    save_config(path, config)  # false must survive a round trip
+    assert load_config(path) == config
+
+    for bad in ({"context_window": 100}, {"context_window": "big"}, {"auto_compact": "yes"}):
+        with pytest.raises(ConfigError):
+            load_config(write(tmp_path / "bad.json", bad))

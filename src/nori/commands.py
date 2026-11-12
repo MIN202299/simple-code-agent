@@ -6,11 +6,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from agents import AgentsException
+from openai import OpenAIError
 from rich.cells import cell_len
 from rich.markup import escape
 from rich.text import Text
 
-from .branding import ACCENT
+from .branding import ACCENT, short_path
 from .pet import art as pet_art
 from .render import format_tokens, shorten
 from .session import Session
@@ -35,6 +37,7 @@ class CommandResult:
 BUILTIN_COMMANDS = [
     Command("help", "显示帮助"),
     Command("clear", "清空对话上下文"),
+    Command("compact", "把对话压缩成摘要以释放上下文（可附带保留重点的说明）", takes_arg=True),
     Command("model", "查看或切换模型", takes_arg=True),
     Command("skills", "列出可用的 skill"),
     Command("mcp", "列出已连接的 MCP 服务器及其工具"),
@@ -112,10 +115,15 @@ def _status(session: Session, emit: Emit) -> None:
     rows = [
         ("模型", session.model_name),
         *session.info.items(),
-        ("工作区", str(context.workspace)),
+        ("工作区", short_path(context.workspace)),
         ("自动批准", "开启" if context.auto_approve else "关闭"),
         ("扩展", f"{len(context.skills)} 个 skill · {len(session.mcp_servers)} 个 MCP 服务器"),
-        ("上下文", f"{format_tokens(session.context_tokens)} tokens"),
+        (
+            "上下文",
+            f"{format_tokens(session.context_tokens)} / {format_tokens(session.context_window)}"
+            f" tokens ({session.context_share:.0%})"
+            f" · 自动压缩{'开启' if session.auto_compact else '关闭'}",
+        ),
         (
             "累计用量",
             f"↑ {format_tokens(session.input_tokens)} ↓ {format_tokens(session.output_tokens)} tokens",
@@ -149,6 +157,19 @@ def _pet(session: Session, arg: str, emit: Emit) -> None:
         emit(Text.assemble("  ", (art_line, ACCENT), "  ", fact))
 
 
+async def _compact(session: Session, instructions: str, emit: Emit) -> None:
+    if not session.history:
+        emit("[dim]还没有对话内容，无需压缩。[/dim]")
+        return
+    try:
+        result = await session.compact(instructions)
+    except (AgentsException, OpenAIError) as exc:
+        emit(f"[red]压缩失败: {escape(f'{type(exc).__name__}: {exc}')}[/red]")
+        return
+    if result is None:
+        emit("[dim]对话太短，无需压缩。[/dim]")
+
+
 async def run_command(session: Session, line: str, emit: Emit) -> CommandResult:
     """Run a slash command, writing its output through `emit`."""
     command, _, arg = line.partition(" ")
@@ -161,6 +182,8 @@ async def run_command(session: Session, line: str, emit: Emit) -> CommandResult:
     elif name == "clear":
         session.clear()
         emit("[dim]上下文已清空。[/dim]")
+    elif name == "compact":
+        await _compact(session, arg, emit)
     elif name == "model":
         if arg:
             session.set_model(arg)
