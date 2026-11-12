@@ -7,12 +7,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-from agents import Agent, Model, Runner, ToolApprovalItem
+from agents import Agent, MaxTurnsExceeded, Model, Runner, ToolApprovalItem
 from agents.mcp import MCPServer
 from rich.console import Console
 from rich.markup import escape
 
 from .agent import build_agent
+from .config import DEFAULT_MAX_TURNS
 from .render import parse_args, render_call, render_output
 from .skills import Skill
 from .tools import AgentContext
@@ -126,7 +127,7 @@ class Session:
         workspace: Path,
         model: str | Model | None = None,
         auto_approve: bool = False,
-        max_turns: int = 50,
+        max_turns: int = DEFAULT_MAX_TURNS,
         ui: UI | None = None,
         skills: dict[str, Skill] | None = None,
         mcp_servers: list[MCPServer] | None = None,
@@ -165,7 +166,8 @@ class Session:
         """Run one user turn to completion, pausing for tool approvals.
 
         Returns the agent's final answer. A turn that fails leaves the history
-        untouched; a turn that is cancelled keeps the work finished so far.
+        untouched; a turn that is cancelled or runs out of model turns keeps the
+        work finished so far, so the user can ask to continue.
         """
         run_input: Any = [*self.history, {"role": "user", "content": text}]
         calls: dict[str, tuple[str, dict[str, Any]]] = {}
@@ -194,6 +196,9 @@ class Session:
                         state.reject(item, rejection_message=REJECTION_MESSAGE)
             except asyncio.CancelledError:
                 result.cancel()
+                self._keep_partial(result, INTERRUPT_NOTE)
+                raise
+            except MaxTurnsExceeded:
                 self._keep_partial(result)
                 raise
             run_input = state
@@ -204,13 +209,13 @@ class Session:
         self.ui.turn_done(usage.input_tokens, usage.output_tokens)
         return result.final_output
 
-    def _keep_partial(self, result: Any) -> None:
-        """Keep what an interrupted turn already did, and note the interruption."""
+    def _keep_partial(self, result: Any, note: str | None = None) -> None:
+        """Keep what an unfinished turn already did, optionally followed by a note."""
         try:
             items = complete_history(result.to_input_list())
-        except Exception:  # never let bookkeeping mask the cancellation
+        except Exception:  # never let bookkeeping mask the original error
             return
-        self.history = [*items, {"role": "user", "content": INTERRUPT_NOTE}]
+        self.history = [*items, *([{"role": "user", "content": note}] if note else [])]
 
     async def _stream(self, result: Any, calls: dict[str, tuple[str, dict[str, Any]]]) -> None:
         """Forward streamed text, tool calls and tool results to the UI."""

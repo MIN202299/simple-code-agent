@@ -7,7 +7,7 @@ import io
 import json
 
 import pytest
-from agents import set_tracing_disabled
+from agents import MaxTurnsExceeded, set_tracing_disabled
 from agents.testing import ScriptedModel, assistant_message, function_call
 from rich.console import Console
 
@@ -307,3 +307,27 @@ def test_interrupted_turn_keeps_finished_work(tmp_path):
     assert types.count("function_call") == types.count("function_call_output") == 1
     contents = [item.get("content") for item in sent if item.get("role") == "user"]
     assert contents == ["go", "[Request interrupted by user]", "continue"]
+
+
+def test_running_out_of_turns_keeps_the_work_and_can_continue(tmp_path):
+    session, _ = make_session(
+        tmp_path,
+        [
+            [function_call("write_file", {"path": "1.txt", "content": "1"}, call_id="c1")],
+            [function_call("write_file", {"path": "2.txt", "content": "2"}, call_id="c2")],
+            [function_call("write_file", {"path": "3.txt", "content": "3"}, call_id="c3")],
+            [assistant_message("all done")],
+        ],
+        auto_approve=True,
+    )
+    session.max_turns = 2
+    with pytest.raises(MaxTurnsExceeded):
+        asyncio.run(session.run_turn("write three files"))
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["1.txt", "2.txt"]
+    assert len(tool_outputs(session)) == 2  # the finished steps are still in context
+
+    assert asyncio.run(session.run_turn("继续")) == "all done"
+    assert (tmp_path / "3.txt").exists()
+    sent = session.agent.model.last_call.input
+    assert [i["content"] for i in sent if i.get("role") == "user"] == ["write three files", "继续"]

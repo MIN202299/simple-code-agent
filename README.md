@@ -43,6 +43,7 @@ code-agent --setup        # 填写 base url、api key、模型
 | `base_url` | API 地址；省略则使用 OpenAI 官方地址 |
 | `model` | 模型名；省略则使用 SDK 默认模型 |
 | `api` | `responses` 或 `chat`。省略时：设置了非 OpenAI 的 `base_url` 用 `chat`，否则用 `responses` |
+| `max_turns` | 单个任务的最大模型轮数（每次模型回复算一轮），默认 200 |
 
 - `code-agent --setup` 会交互式地创建或修改这个文件（Key 输入不回显，文件权限为 600）。
 - 没有配置 Key 时，首次启动会自动进入这个向导。
@@ -51,7 +52,7 @@ code-agent --setup        # 填写 base url、api key、模型
 
 优先级从高到低：
 
-1. 命令行参数 `--model`、`--base-url`、`--api`
+1. 命令行参数 `--model`、`--base-url`、`--api`、`--max-turns`
 2. 环境变量 `CODE_AGENT_MODEL`、`CODE_AGENT_API`
 3. 配置文件
 4. 通用环境变量 `OPENAI_API_KEY`、`OPENAI_BASE_URL`
@@ -78,7 +79,7 @@ code-agent -m other-model -y        # 临时换模型，并自动批准所有操
 | `-y, --yes` | 自动批准写文件和执行命令 |
 | `--plain` | 不使用 TUI，改用逐行输出的简单模式 |
 | `--no-mcp` / `--no-skills` | 不加载 MCP 服务器 / skill |
-| `--max-turns` | 单个任务的最大模型轮数，默认 50 |
+| `--max-turns` | 单个任务的最大模型轮数，默认 200 |
 
 标准输入或输出不是终端时（例如管道），自动使用简单模式。
 
@@ -127,6 +128,7 @@ code-agent -m other-model -y        # 临时换模型，并自动批准所有操
 
 - agent 工作时可以继续输入，发送的消息会排队，在当前任务结束后依次执行。
 - 中断任务后，已经完成的步骤会保留在上下文里，可以接着说"继续"。
+- 任务达到最大轮数时同样会保留已完成的步骤，输入"继续"即可接着做；上限可用 `max_turns` 调大。
 - 审批对话框弹出后的前半秒不响应按键，避免正在输入的内容误批准操作。
 
 命令：

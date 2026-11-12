@@ -120,3 +120,16 @@ def test_cli_reports_missing_key_and_bad_config(tmp_path, monkeypatch, capsys):
     write(config, "{broken")
     assert main(["--config", str(config), "-C", str(tmp_path), "hi"]) == 2
     assert "配置有误" in capsys.readouterr().out
+
+
+def test_max_turns(tmp_path):
+    assert resolve_settings({}, {}).max_turns == 200
+    path = write(tmp_path / "c.json", {"api_key": "k", "max_turns": 500})
+    config = load_config(path)
+    assert resolve_settings(config, {}).max_turns == 500
+    assert resolve_settings(config, {}, max_turns=30).max_turns == 30
+    save_config(path, config)
+    assert load_config(path)["max_turns"] == 500
+    for bad in (0, -1, "many", True, 1.5):
+        with pytest.raises(ConfigError):
+            load_config(write(tmp_path / "bad.json", {"max_turns": bad}))

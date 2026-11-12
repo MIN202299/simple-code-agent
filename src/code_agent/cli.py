@@ -45,8 +45,9 @@ def run_plain_turn(runner: asyncio.Runner, session: Session, console: Console, t
         console.print("\n[yellow]已中断。[/yellow]")
     except MaxTurnsExceeded:
         console.print(
-            f"\n[red]已达到最大轮数 ({session.max_turns})，任务未完成。"
-            "可用 --max-turns 调大。[/red]"
+            f"\n[red]已达到单次任务的最大轮数 ({session.max_turns})，任务未完成。[/red]\n"
+            "[dim]已完成的步骤保留在上下文中，输入\"继续\"可接着执行；"
+            "可用 --max-turns 或配置文件的 max_turns 调大上限。[/dim]"
         )
     except (AgentsException, OpenAIError) as exc:
         console.print(f"\n[red]出错: {escape(f'{type(exc).__name__}: {exc}')}[/red]")
@@ -149,7 +150,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plain", action="store_true", help="不使用 TUI，改用逐行输出的简单模式")
     parser.add_argument("--no-mcp", action="store_true", help="不加载 MCP 服务器")
     parser.add_argument("--no-skills", action="store_true", help="不加载 skill")
-    parser.add_argument("--max-turns", type=int, default=50, help="单个任务的最大模型轮数")
+    parser.add_argument(
+        "--max-turns", type=int, help="单个任务的最大模型轮数（默认 200，可在配置文件中设置）"
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -182,7 +185,11 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             config = load_config(config_path)
         settings = resolve_settings(
-            config, model=args.model, base_url=args.base_url, api=args.api
+            config,
+            model=args.model,
+            base_url=args.base_url,
+            api=args.api,
+            max_turns=args.max_turns,
         )
     except ConfigError as exc:
         console.print(f"[red]配置有误: {escape(str(exc))}[/red]")
@@ -209,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
                 workspace,
                 model=settings.model,
                 auto_approve=args.yes,
-                max_turns=args.max_turns,
+                max_turns=settings.max_turns,
                 ui=PlainUI(console),
                 skills=skills,
                 mcp_servers=servers,

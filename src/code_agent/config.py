@@ -6,7 +6,8 @@ Settings live in `~/.code_agent/config.json`:
       "base_url": "https://api.example.com/v1",
       "api_key": "sk-...",
       "model": "your-model",
-      "api": "chat"
+      "api": "chat",
+      "max_turns": 200
     }
 
 Only the user-level file is read. A project-level file is deliberately not
@@ -28,6 +29,7 @@ from rich.console import Console
 from .mcp_config import expand_env
 
 CONFIG_KEYS = ("base_url", "api_key", "model", "api")
+DEFAULT_MAX_TURNS = 200
 APIS = ("responses", "chat")
 OPENAI_HOST = "api.openai.com"
 
@@ -42,6 +44,7 @@ class Settings:
     base_url: str | None
     model: str | None
     api: str
+    max_turns: int = DEFAULT_MAX_TURNS
 
 
 def default_config_path(env: Mapping[str, str] | None = None, home: Path | None = None) -> Path:
@@ -51,7 +54,7 @@ def default_config_path(env: Mapping[str, str] | None = None, home: Path | None 
     return (home or Path.home()) / ".code_agent" / "config.json"
 
 
-def load_config(path: Path) -> dict[str, str]:
+def load_config(path: Path) -> dict[str, Any]:
     """Read the config file. A missing file is an empty config."""
     if not path.is_file():
         return {}
@@ -61,7 +64,7 @@ def load_config(path: Path) -> dict[str, str]:
         raise ConfigError(f"{path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ConfigError(f"{path}: 顶层必须是一个 JSON 对象")
-    config: dict[str, str] = {}
+    config: dict[str, Any] = {}
     for key in CONFIG_KEYS:
         value = data.get(key)
         if value in (None, ""):
@@ -71,13 +74,18 @@ def load_config(path: Path) -> dict[str, str]:
         config[key] = expand_env(value.strip())
     if "api" in config and config["api"] not in APIS:
         raise ConfigError(f"{path}: api 必须是 {' 或 '.join(APIS)}")
+    max_turns = data.get("max_turns")
+    if max_turns is not None:
+        if isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns < 1:
+            raise ConfigError(f"{path}: max_turns 必须是正整数")
+        config["max_turns"] = max_turns
     return config
 
 
 def save_config(path: Path, config: Mapping[str, Any]) -> None:
     """Write the config file, readable only by the owner since it holds a key."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = {key: config[key] for key in CONFIG_KEYS if config.get(key)}
+    data = {key: config[key] for key in (*CONFIG_KEYS, "max_turns") if config.get(key)}
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as file:
         json.dump(data, file, ensure_ascii=False, indent=2)
@@ -86,12 +94,13 @@ def save_config(path: Path, config: Mapping[str, Any]) -> None:
 
 
 def resolve_settings(
-    config: Mapping[str, str],
+    config: Mapping[str, Any],
     env: Mapping[str, str] | None = None,
     *,
     model: str | None = None,
     base_url: str | None = None,
     api: str | None = None,
+    max_turns: int | None = None,
 ) -> Settings:
     """Combine sources. Precedence: command line > CODE_AGENT_* > config file > OPENAI_*.
 
@@ -116,6 +125,7 @@ def resolve_settings(
         base_url=resolved_base_url,
         model=pick(model, env.get("CODE_AGENT_MODEL"), config.get("model")),
         api=resolved_api,
+        max_turns=max_turns or config.get("max_turns") or DEFAULT_MAX_TURNS,
     )
 
 
@@ -149,8 +159,9 @@ def run_setup(path: Path, console: Console) -> bool:
     except (EOFError, KeyboardInterrupt):
         console.print("\n[yellow]已取消，未保存。[/yellow]")
         return False
-    if current.get("api"):
-        config["api"] = current["api"]
+    for key in ("api", "max_turns"):  # settings the wizard does not ask about
+        if current.get(key):
+            config[key] = current[key]
     if not config["api_key"]:
         console.print("[red]API Key 不能为空，未保存。[/red]")
         return False

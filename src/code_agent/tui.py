@@ -494,7 +494,12 @@ class Tui:
             self.emit(Text("  ⎿  已中断", style="red"))
         except MaxTurnsExceeded:
             self.emit(
-                Text(f"  ⎿  已达到最大轮数 ({self.session.max_turns})，任务未完成。", style="red")
+                Text(
+                    f"  ⎿  已达到单次任务的最大轮数 ({self.session.max_turns})，任务未完成。\n"
+                    "     已完成的步骤保留在上下文中，输入\"继续\"可接着执行。\n"
+                    "     可用 --max-turns 或配置文件的 max_turns 调大上限。",
+                    style="red",
+                )
             )
         except (AgentsException, OpenAIError) as exc:
             self.emit(Text(f"  ⎿  出错: {type(exc).__name__}: {exc}", style="red"))
