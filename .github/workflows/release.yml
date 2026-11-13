@@ -117,6 +117,6 @@ jobs:
     steps:
       - name: Install with Homebrew
         run: |
-          brew tap min202299/nori "https://github.com/${{ github.repository }}"
-          brew install min202299/nori/nori
+          brew tap min202299/tap "https://github.com/${{ github.repository }}"
+          brew install nori
           nori --version
