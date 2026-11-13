@@ -306,7 +306,7 @@ class Session:
         permissions_path: Path | None = None,
     ) -> None:
         permissions = Permissions(
-            workspace, "auto" if auto_approve else mode, path=permissions_path
+            workspace, "bypass" if auto_approve else mode, path=permissions_path
         )
         self.context = AgentContext(
             workspace=workspace, permissions=permissions, skills=dict(skills or {})

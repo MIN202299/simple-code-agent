@@ -13,7 +13,8 @@ Nori is a coding agent for the terminal, built on the [OpenAI Agents SDK](https:
 ## Features
 
 - **Terminal UI** — pinned input box, streamed Markdown, tool calls with live status and diffs, approval dialogs, a `/` command panel and `@` file completion
-- **Permission modes** — `default`, `accept-edits`, `plan` and `auto`, switched with Shift+Tab
+- **Permission modes** — `default`, `accept-edits`, `auto`, `plan` and `bypass`, switched with Shift+Tab
+- **Auto mode** — file edits and low-risk commands run without asking; anything risky still asks
 - **Plan mode** — the agent researches read-only and proposes a plan; nothing changes until you approve it
 - **Allow rules** — "don't ask again" for a command prefix, a host or a tool, remembered per project
 - **Undo** — `/undo` reverts the file changes of the last turn
@@ -65,6 +66,7 @@ nori -C path/to/project           # work in another directory
 nori -c                           # continue the last session here
 nori "add unit tests for utils.py"   # run one task and exit (plain output, good for scripts)
 nori --mode plan                  # start in plan mode
+nori --mode auto                  # run low-risk things without asking
 nori -m other-model -y            # another model for this run, approving everything
 ```
 
@@ -73,8 +75,8 @@ nori -m other-model -y            # another model for this run, approving everyt
 | `-m, --model` | Model name; overrides the config file |
 | `--base-url` | API base URL; overrides the config file |
 | `--api {responses,chat}` | Which API to use |
-| `--mode MODE` | Permission mode: `default`, `accept-edits`, `plan` or `auto` |
-| `-y, --yes` | Same as `--mode auto`: approve everything |
+| `--mode MODE` | Permission mode: `default`, `accept-edits`, `auto`, `plan` or `bypass` |
+| `-y, --yes` | Same as `--mode bypass`: approve everything |
 | `-c, --continue` | Continue the most recent session in this workspace |
 | `-r, --resume ID` | Resume a session by ID (a prefix is enough) |
 | `--list-sessions` | List the saved sessions of this workspace and exit |
@@ -191,7 +193,7 @@ You can keep typing while the agent works: messages are queued and run in order.
 | `/mcp` | List connected MCP servers and their tools |
 | `/lang [en\|zh]` | Switch the interface language |
 | `/pet` | Meet your pet |
-| `/yes` | Toggle auto mode |
+| `/yes` | Toggle bypass mode |
 | `/exit` | Quit |
 
 ## Permissions
@@ -200,14 +202,43 @@ By default Nori asks before it changes a file, runs a command, fetches a URL or 
 
 ### Modes
 
-| Mode | File edits | Commands and other actions |
-| --- | --- | --- |
-| `default` | ask | ask |
-| `accept-edits` | allowed | ask |
-| `plan` | refused | ask |
-| `auto` | allowed | allowed |
+| Mode | File edits | Shell commands | Web fetches, MCP tools |
+| --- | --- | --- | --- |
+| `default` | ask | ask | ask |
+| `accept-edits` | allowed | ask | ask |
+| `auto` | allowed | low-risk ones allowed, the rest ask | ask |
+| `plan` | refused | ask | ask |
+| `bypass` | allowed | allowed | allowed |
 
-`Shift+Tab` steps through `default → accept-edits → plan`. `auto` is reached with `/mode auto`, `/yes`, `--mode auto` or `-y`; it is not in the Shift+Tab cycle so it cannot be switched on by accident. The current mode is shown in the footer and in the colour of the input box.
+`Shift+Tab` steps through `default → accept-edits → auto → plan`. `bypass` is reached with `/mode bypass`, `/yes`, `--mode bypass` or `-y`; it is not in the Shift+Tab cycle so it cannot be switched on by accident. The current mode is shown in the footer and in the colour of the input box.
+
+### Auto mode
+
+Auto mode is for letting the agent get on with routine work while still stopping at anything that could hurt. File edits are applied (they stay inside the workspace, and `/undo` reverts them), and a shell command runs without asking when it is recognised as low-risk:
+
+| Runs without asking | Examples |
+| --- | --- |
+| Looking at things | `ls`, `cat`, `grep`, `find`, `git status`, `git diff`, `git log` |
+| Tests, linters, type checkers, builds | `pytest`, `ruff check`, `mypy`, `tsc`, `npm test`, `npm run lint`, `cargo test`, `go vet`, `make test` |
+| Local, reversible git | `git add`, `git commit`, `git stash` |
+| Creating things in the workspace | `mkdir`, `touch`, `cp` |
+
+Everything else asks, and the dialog says why:
+
+| Still asks | Examples |
+| --- | --- |
+| Destructive or hard to undo | `rm`, `mv`, `chmod`, `kill`, `sed -i`, `find -delete` |
+| Network | `curl`, `wget`, `ssh`, `gh` |
+| Installing packages | `npm install`, `pip install`, `brew install` |
+| Git that rewrites, discards or publishes | `git push`, `reset`, `checkout`, `rebase`, `clean`, `commit --amend` |
+| Arbitrary code | `python script.py`, `node build.js`, `./deploy.sh`, `bash -c`, `npm run <anything else>` |
+| Outside the workspace | `cat /etc/passwd`, `ls ~`, `cat ../x` |
+| Hard to judge | variables (`$HOME`), `$(...)`, backticks, writing with `>`, background jobs |
+
+- A compound command (`&&`, `;`, `|`) is low-risk only if every part is.
+- The check is conservative: a command it does not recognise asks. If you keep approving one, choose "don't ask again" to add an allow rule.
+- It reads the command line, not what the command does. `pytest` and `npm test` run your project's own code, which is what makes them useful, so auto mode is for projects you trust. It is a convenience, not a sandbox.
+- The list is fixed in `src/nori/risk.py`; there is no model-based judgement.
 
 ### Plan mode
 
@@ -352,7 +383,8 @@ Nori sits next to the input box and reacts to what is going on: thinking `( o.O 
 ## Security notes
 
 - File tools are confined to the workspace. `run_shell` is not — it runs arbitrary commands, which is why it asks.
-- `auto` mode and `-y` skip every confirmation, including whether to start a project's MCP servers. Use them only in projects and environments you trust.
+- `bypass` mode and `-y` skip every confirmation, including whether to start a project's MCP servers. Use them only in projects and environments you trust.
+- `auto` mode decides from the text of a command, and the commands it allows include ones that run your project's code (tests, builds). Use it in projects you trust.
 - Skills and fetched web pages are text the model reads and may act on. Use skills you trust and stay in a mode that asks when browsing unknown sites.
 - The API key in the config file is stored in plain text (file mode 600). Write `"api_key": "${MY_KEY}"` to keep it out of the file.
 
@@ -380,6 +412,7 @@ src/nori/
   tui.py          the terminal UI (prompt_toolkit)
   session.py      the conversation: run loop, approvals, compaction guard, sub-agents
   permissions.py  modes and allow rules
+  risk.py         which shell commands are low-risk, for auto mode
   tools.py        the agent's tools
   commands.py     slash commands and pickers
   compact.py      summarising history

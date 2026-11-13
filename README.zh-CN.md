@@ -13,7 +13,8 @@ Nori 是一个运行在终端里的 code agent，基于 [OpenAI Agents SDK](http
 ## 功能
 
 - **终端界面**：底部固定输入框，流式 Markdown，带实时状态和 diff 的工具调用，审批对话框，`/` 命令面板和 `@` 文件补全
-- **权限模式**：`default`、`accept-edits`、`plan`、`auto`，用 Shift+Tab 切换
+- **权限模式**：`default`、`accept-edits`、`auto`、`plan`、`bypass`，用 Shift+Tab 切换
+- **auto 模式**：文件修改和低风险命令直接执行，有风险的仍然询问
 - **计划模式**：agent 只读调研并给出计划，你批准之前不会改动任何东西
 - **放行规则**：对某个命令前缀、某个域名或某个工具选择"不再询问"，按项目记住
 - **撤销**：`/undo` 撤销上一轮的文件改动
@@ -65,6 +66,7 @@ nori -C path/to/project           # 指定工作区
 nori -c                           # 继续这里上一次的会话
 nori "给 utils.py 补上单元测试"      # 执行一个任务后退出（逐行输出，适合脚本）
 nori --mode plan                  # 以计划模式启动
+nori --mode auto                  # 低风险操作不再询问
 nori -m other-model -y            # 这一次换个模型，并全部自动批准
 ```
 
@@ -73,8 +75,8 @@ nori -m other-model -y            # 这一次换个模型，并全部自动批�
 | `-m, --model` | 模型名，覆盖配置文件 |
 | `--base-url` | API 地址，覆盖配置文件 |
 | `--api {responses,chat}` | 使用哪种 API |
-| `--mode MODE` | 权限模式：`default`、`accept-edits`、`plan` 或 `auto` |
-| `-y, --yes` | 等同 `--mode auto`：全部自动批准 |
+| `--mode MODE` | 权限模式：`default`、`accept-edits`、`auto`、`plan` 或 `bypass` |
+| `-y, --yes` | 等同 `--mode bypass`：全部自动批准 |
 | `-c, --continue` | 继续这个工作区最近的一次会话 |
 | `-r, --resume ID` | 恢复指定的会话（ID 可只写开头几位） |
 | `--list-sessions` | 列出这个工作区保存的会话后退出 |
@@ -191,7 +193,7 @@ agent 工作时可以继续输入，消息会排队依次执行。中断后已�
 | `/mcp` | 列出已连接的 MCP 服务器及其工具 |
 | `/lang [en\|zh]` | 切换界面语言 |
 | `/pet` | 看看你的宠物 |
-| `/yes` | 开关 auto 模式 |
+| `/yes` | 开关 bypass 模式 |
 | `/exit` | 退出 |
 
 ## 权限
@@ -200,14 +202,43 @@ agent 工作时可以继续输入，消息会排队依次执行。中断后已�
 
 ### 模式
 
-| 模式 | 文件修改 | 命令及其他操作 |
-| --- | --- | --- |
-| `default` | 询问 | 询问 |
-| `accept-edits` | 直接允许 | 询问 |
-| `plan` | 拒绝 | 询问 |
-| `auto` | 直接允许 | 直接允许 |
+| 模式 | 文件修改 | shell 命令 | 抓取网页、MCP 工具 |
+| --- | --- | --- | --- |
+| `default` | 询问 | 询问 | 询问 |
+| `accept-edits` | 直接允许 | 询问 | 询问 |
+| `auto` | 直接允许 | 低风险的直接允许，其余询问 | 询问 |
+| `plan` | 拒绝 | 询问 | 询问 |
+| `bypass` | 直接允许 | 直接允许 | 直接允许 |
 
-`Shift+Tab` 在 `default → accept-edits → plan` 之间循环。`auto` 要通过 `/mode auto`、`/yes`、`--mode auto` 或 `-y` 进入；它不在 Shift+Tab 的循环里，避免误触开启。当前模式显示在底栏，输入框边线的颜色也会随之变化。
+`Shift+Tab` 在 `default → accept-edits → auto → plan` 之间循环。`bypass` 要通过 `/mode bypass`、`/yes`、`--mode bypass` 或 `-y` 进入；它不在 Shift+Tab 的循环里，避免误触开启。当前模式显示在底栏，输入框边线的颜色也会随之变化。
+
+### auto 模式
+
+auto 模式让 agent 自己把日常工作往下做，但遇到可能造成损害的操作仍然停下来问你。文件修改直接生效（它们限制在工作区内，`/undo` 可以撤销）；shell 命令被识别为低风险时直接执行：
+
+| 直接执行 | 例子 |
+| --- | --- |
+| 查看类 | `ls`、`cat`、`grep`、`find`、`git status`、`git diff`、`git log` |
+| 测试、lint、类型检查、构建 | `pytest`、`ruff check`、`mypy`、`tsc`、`npm test`、`npm run lint`、`cargo test`、`go vet`、`make test` |
+| 本地、可撤销的 git 操作 | `git add`、`git commit`、`git stash` |
+| 在工作区内创建东西 | `mkdir`、`touch`、`cp` |
+
+其余的都会询问，对话框里会说明原因：
+
+| 仍然询问 | 例子 |
+| --- | --- |
+| 有破坏性或难以撤销 | `rm`、`mv`、`chmod`、`kill`、`sed -i`、`find -delete` |
+| 访问网络 | `curl`、`wget`、`ssh`、`gh` |
+| 安装软件包 | `npm install`、`pip install`、`brew install` |
+| 改写、丢弃或发布的 git 操作 | `git push`、`reset`、`checkout`、`rebase`、`clean`、`commit --amend` |
+| 执行任意代码 | `python script.py`、`node build.js`、`./deploy.sh`、`bash -c`、`npm run <其他脚本>` |
+| 涉及工作区之外 | `cat /etc/passwd`、`ls ~`、`cat ../x` |
+| 难以判断 | 变量（`$HOME`）、`$(...)`、反引号、用 `>` 写文件、后台任务 |
+
+- 复合命令（`&&`、`;`、`|`）只有每一段都是低风险才算低风险。
+- 判定偏保守：不认识的命令一律询问。如果某条命令你总是批准，选"不再询问"为它加一条放行规则。
+- 它判断的是命令行文本，而不是命令实际做了什么。`pytest`、`npm test` 会运行你项目里的代码，这正是它们有用的原因，所以 auto 模式适合你信任的项目。它是便利功能，不是沙箱。
+- 规则是固定写在 `src/nori/risk.py` 里的，没有用模型来判断。
 
 ### 计划模式
 
@@ -352,7 +383,8 @@ Nori 住在输入框旁边，对正在发生的事做出反应：思考时 `( o.
 ## 安全说明
 
 - 文件工具只能访问工作区内的路径。`run_shell` 不受此限制，它执行的是任意命令，所以才需要确认。
-- `auto` 模式和 `-y` 会跳过所有确认，包括是否启动项目里的 MCP 服务器。只在你信任的项目和环境里使用。
+- `bypass` 模式和 `-y` 会跳过所有确认，包括是否启动项目里的 MCP 服务器。只在你信任的项目和环境里使用。
+- `auto` 模式根据命令的文本来判断，它放行的命令里包括会运行你项目代码的（测试、构建）。请在你信任的项目里使用。
 - skill 和抓取到的网页都是模型会读、也可能照着做的文字。只使用你信任的 skill，浏览陌生网站时保持在会询问的模式下。
 - 配置文件里的 API Key 是明文保存的（文件权限 600）。写成 `"api_key": "${MY_KEY}"` 可以不让它落盘。
 
@@ -380,6 +412,7 @@ src/nori/
   tui.py          终端界面（prompt_toolkit）
   session.py      对话：运行循环、审批、压缩守卫、子 agent
   permissions.py  权限模式与放行规则
+  risk.py         auto 模式用的 shell 命令风险判定
   tools.py        agent 的工具
   commands.py     斜杠命令与选择面板
   compact.py      历史摘要

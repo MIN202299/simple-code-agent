@@ -189,7 +189,7 @@ def run(
             session = Session(
                 workspace,
                 model=settings.model,
-                mode="auto" if args.yes else (args.mode or settings.mode),
+                mode="bypass" if args.yes else (args.mode or settings.mode),
                 permissions_path=rules_path(),
                 max_turns=settings.max_turns if use_tui else unattended_turns,
                 context_window=settings.context_window,

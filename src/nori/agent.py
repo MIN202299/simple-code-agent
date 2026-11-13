@@ -135,7 +135,12 @@ if a decision is theirs to make.
 MODE_PROMPTS = {
     "plan": PLAN_MODE_PROMPT,
     "accept-edits": "\n# Mode\nFile edits are applied without asking the user; commands still need approval.\n",
-    "auto": "\n# Mode\nYour tool calls run without asking the user. Be careful with destructive commands.\n",
+    "auto": (
+        "\n# Mode\nAuto mode: file edits and low-risk shell commands (inspecting things, tests, "
+        "linters, builds, local git) run without asking; anything else asks the user first. "
+        "Prefer simple, single commands over long compound ones, which are harder to judge.\n"
+    ),
+    "bypass": "\n# Mode\nYour tool calls run without asking the user. Be careful with destructive commands.\n",
 }
 
 

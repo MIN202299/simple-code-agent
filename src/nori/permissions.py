@@ -4,7 +4,8 @@ Modes
     default       ask before file changes, commands and other side effects
     accept-edits  file edits are allowed; commands still ask
     plan          read-only: file edits are refused, the agent proposes a plan
-    auto          everything is allowed without asking
+    auto          file edits and low-risk commands are allowed; anything else asks
+    bypass        everything is allowed without asking
 
 Rules are per-workspace allowances the user granted with "don't ask again".
 They are stored in the user's own directory (`~/.nori/permissions.json`), never
@@ -25,11 +26,16 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .branding import app_dir
+from .risk import Risk, assess_shell
 
-MODES = ("default", "accept-edits", "plan", "auto")
-MODE_CYCLE = ("default", "accept-edits", "plan")  # what Shift+Tab steps through
+MODES = ("default", "accept-edits", "plan", "auto", "bypass")
+# What Shift+Tab steps through. `bypass` is left out so it is never reached by accident.
+MODE_CYCLE = ("default", "accept-edits", "auto", "plan")
 EDIT_TOOLS = frozenset({"write_file", "edit_file"})
 # Tools that are part of planning itself and never need approval.
+# Reasons auto mode asks that are not about the command text (English, translated on display).
+BACKGROUND = "starts a command that keeps running in the background"
+OTHER_TOOL = "only file edits and low-risk commands run without asking"
 PLAN_REJECTION = (
     "Plan mode is on: files must not be changed yet. Finish your research, "
     "then call present_plan with your plan and wait for the user's approval."
@@ -137,7 +143,7 @@ class Permissions:
         if mode not in MODES:
             return False
         if mode == "plan" and self.mode != "plan":
-            self._previous = self.mode if self.mode != "auto" else "default"
+            self._previous = self.mode if self.mode != "bypass" else "default"
         self.mode = mode
         return True
 
@@ -152,16 +158,32 @@ class Permissions:
     def decide(self, tool: str, args: dict[str, Any] | None = None) -> str:
         """`allow`, `ask` or `deny` for one tool call."""
         args = args or {}
-        if self.mode == "auto":
+        if self.mode == "bypass":
             return "allow"
         if tool in EDIT_TOOLS:
             if self.mode == "plan":
                 return "deny"
-            if self.mode == "accept-edits":
+            if self.mode in ("accept-edits", "auto"):
                 return "allow"
+        if self.mode == "auto" and tool == "run_shell" and self.shell_risk(args).low:
+            return "allow"
         if any(rule_matches(rule, tool, args) for rule in self.rules):
             return "allow"
         return "ask"
+
+    def shell_risk(self, args: dict[str, Any]) -> Risk:
+        """How risky a run_shell call is, as auto mode judges it."""
+        if args.get("background"):
+            return Risk("unknown", BACKGROUND)  # keeps running unattended
+        return assess_shell(str(args.get("command", "")), Path(self.workspace))
+
+    def auto_reason(self, tool: str, args: dict[str, Any] | None = None) -> str:
+        """Why auto mode is asking about this call ("" outside auto mode)."""
+        if self.mode != "auto":
+            return ""
+        if tool == "run_shell":
+            return self.shell_risk(args or {}).reason
+        return OTHER_TOOL
 
     # ------------------------------------------------------------------ rules
 

@@ -75,7 +75,7 @@ BUILTIN_COMMANDS = [
     Command("permissions", "Show or remove the allow rules of this project", "[remove N|clear]"),
     Command("undo", "Revert the file changes of the last turn"),
     Command("tasks", "List background commands"),
-    Command("yes", "Toggle auto mode (approve everything)"),
+    Command("yes", "Toggle bypass mode (approve everything)"),
     Command("exit", "Quit"),
 ]
 ALIASES = {
@@ -92,7 +92,8 @@ MODE_DESCRIPTIONS = {
     "default": "ask before file changes and commands",
     "accept-edits": "apply file edits without asking; commands still ask",
     "plan": "read-only: research and propose a plan first",
-    "auto": "approve everything without asking",
+    "auto": "run edits and low-risk commands without asking; ask about the rest",
+    "bypass": "approve everything without asking",
 }
 
 

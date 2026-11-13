@@ -54,11 +54,11 @@ class AgentContext:
 
     @property
     def auto_approve(self) -> bool:
-        return self.permissions.mode == "auto"
+        return self.permissions.mode == "bypass"
 
     @auto_approve.setter
     def auto_approve(self, value: bool) -> None:
-        self.permissions.set_mode("auto" if value else "default")
+        self.permissions.set_mode("bypass" if value else "default")
 
     def readable_roots(self) -> list[Path]:
         """The workspace plus skill directories, which are readable but not writable."""

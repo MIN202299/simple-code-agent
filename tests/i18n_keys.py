@@ -29,6 +29,8 @@ def translation_keys() -> set[str]:
     from nori import pet
     from nori.branding import TAGLINE
     from nori.commands import BUILTIN_COMMANDS, MODE_DESCRIPTIONS
+    from nori.permissions import BACKGROUND, OTHER_TOOL
+    from nori.risk import REASONS
     from nori.tui import MODE_LABELS, SHORTCUTS
 
     keys: set[str] = set()
@@ -62,6 +64,8 @@ def translation_keys() -> set[str]:
         keys.update(verbs)
     keys.update(("Endpoint", "API key", "Config"))  # labels of Session.info
     keys.update(MODE_DESCRIPTIONS.values())
+    keys.update(REASONS)
+    keys.update((BACKGROUND, OTHER_TOOL))
     keys.update(MODE_LABELS.values())
     return keys
 

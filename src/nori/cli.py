@@ -78,12 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-save", action="store_true", help=t("do not save this session"))
     parser.add_argument("-C", "--cwd", default=".", help=t("workspace directory (default: current directory)"))
     parser.add_argument(
-        "-y", "--yes", action="store_true", help=t("approve file writes and commands automatically")
+        "-y", "--yes", action="store_true", help=t("bypass mode: approve everything without asking")
     )
     parser.add_argument(
         "--mode",
         choices=MODES,
-        help=t("permission mode: default, accept-edits, plan or auto (default: default)"),
+        help=t("permission mode: default, accept-edits, plan, auto or bypass (default: default)"),
     )
     parser.add_argument("--plain", action="store_true", help=t("use plain line-by-line output instead of the TUI"))
     parser.add_argument("--no-mcp", action="store_true", help=t("do not load MCP servers"))

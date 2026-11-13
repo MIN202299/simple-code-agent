@@ -116,17 +116,19 @@ def test_modes_decide(tmp_path):
         "default": ("ask", "ask"),
         "accept-edits": ("allow", "ask"),
         "plan": ("deny", "ask"),
-        "auto": ("allow", "allow"),
+        "auto": ("allow", "allow"),  # `ls` is low-risk; see the auto mode tests below
+        "bypass": ("allow", "allow"),
     }
     for mode, verdicts in expected.items():
         assert permissions.set_mode(mode)
         assert (permissions.decide(*edit), permissions.decide(*command)) == verdicts, mode
-    assert not permissions.set_mode("nonsense") and permissions.mode == "auto"
+    assert not permissions.set_mode("nonsense") and permissions.mode == "bypass"
 
     permissions.set_mode("default")
-    assert [permissions.cycle() for _ in range(4)] == ["accept-edits", "plan", "default", "accept-edits"]
-    permissions.set_mode("auto")
-    assert permissions.cycle() == "default"  # Shift+Tab leaves auto mode
+    assert [permissions.cycle() for _ in range(5)] == [
+        "accept-edits", "auto", "plan", "default", "accept-edits"]  # fmt: skip
+    permissions.set_mode("bypass")
+    assert permissions.cycle() == "default"  # Shift+Tab leaves bypass mode, never enters it
 
 
 def test_rules_are_saved_per_workspace_outside_the_project(tmp_path):
@@ -233,10 +235,10 @@ def test_present_plan_outside_plan_mode_and_mode_command(tmp_path):
     assert session.mode == "plan"
     assert "未知模式" in run_lines(session, "/mode turbo")[0] and session.mode == "plan"
     run_lines(session, "/yes")
-    assert session.mode == "auto" and session.context.auto_approve
+    assert session.mode == "bypass" and session.context.auto_approve
     _, choices = asyncio.run(picker_choices(session, "mode"))
     assert [(c.label, c.current) for c in choices] == [
-        ("default", False), ("accept-edits", False), ("plan", False), ("auto", True)]
+        ("default", False), ("accept-edits", False), ("plan", False), ("auto", False), ("bypass", True)]
 
 
 # --- undo -------------------------------------------------------------------
@@ -525,7 +527,7 @@ def test_tui_plan_mode_flow(tmp_path):
 
     async def scenario(h):
         tui = h.tui
-        h.send("\x1b[Z\x1b[Z")  # Shift+Tab twice: default -> accept-edits -> plan
+        h.send("\x1b[Z\x1b[Z\x1b[Z")  # Shift+Tab: default -> accept-edits -> auto -> plan
         await h.until(lambda: tui.session.mode == "plan")
         assert "计划模式" in footer(tui)
         h.send("add a file\r")

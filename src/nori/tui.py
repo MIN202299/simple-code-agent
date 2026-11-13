@@ -116,7 +116,8 @@ SHORTCUTS = [
 STYLE = Style.from_dict(
     {
         "rule": "fg:ansibrightblack",
-        "rule.auto": "fg:ansimagenta",
+        "rule.auto": "fg:ansigreen",
+        "rule.bypass": "fg:ansired",
         "rule.accept-edits": "fg:ansiblue",
         "rule.plan": "fg:ansicyan",
         "rule.shell": "fg:ansiyellow",
@@ -130,7 +131,8 @@ STYLE = Style.from_dict(
         "status": "fg:ansiyellow",
         "dim": "fg:ansibrightblack",
         "footer": "fg:ansibrightblack",
-        "footer.auto": "fg:ansimagenta bold",
+        "footer.auto": "fg:ansigreen bold",
+        "footer.bypass": "fg:ansired bold",
         "footer.accept-edits": "fg:ansiblue bold",
         "footer.plan": "fg:ansicyan bold",
         "footer.notice": "fg:ansiyellow",
@@ -149,7 +151,8 @@ STYLE = Style.from_dict(
 MODE_LABELS = {
     "accept-edits": "accept edits on",
     "plan": "plan mode on",
-    "auto": "auto-approve on",
+    "auto": "auto mode on",
+    "bypass": "bypass permissions on",
 }
 _FILE_TOKEN = re.compile(r"(?:^|\s)@(\S*)$")
 
@@ -598,9 +601,13 @@ class Tui:
             options.append((label, "always"))
         options.append((t("No, tell the agent to do it differently (esc)"), "no"))
         permissions = self.session.context.permissions
+        subject = call_title(name, args)
+        reason = permissions.auto_reason(name, args)
+        if reason:  # auto mode: say why this one was not run automatically
+            subject += f"\n   ⚠ {t('Auto mode asks because it')} {t(reason)}"
         return await self._ask(
             f"{t('Approval needed')} · {tool_label(name)}",
-            call_title(name, args),
+            subject,
             t("Allow this?"),
             options,
             cancel="no",
