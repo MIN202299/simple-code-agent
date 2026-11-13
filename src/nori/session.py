@@ -7,7 +7,18 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-from agents import Agent, MaxTurnsExceeded, Model, RunConfig, Runner, ToolApprovalItem
+from agents import (
+    Agent,
+    MaxTurnsExceeded,
+    Model,
+    ModelRetrySettings,
+    ModelSettings,
+    RetryDecision,
+    RetryPolicyContext,
+    RunConfig,
+    Runner,
+    ToolApprovalItem,
+)
 from agents.run_config import CallModelData, ModelInputData
 from agents.mcp import MCPServer
 from rich.console import Console
@@ -35,6 +46,9 @@ INTERRUPT_NOTE = "[Request interrupted by user]"
 COMPACTED = "Compacted context: about {before} → {after} tokens"
 COMPACTION_FAILED = "Compacting the context failed; continuing with the full context."
 SUBAGENT_MAX_TURNS = 100
+DEFAULT_RETRIES = 4
+RETRY_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504, 529})
+RETRYING = "Request failed ({reason}); retrying ({attempt}/{limit})…"
 REJECTION_MESSAGE = "The user rejected this tool call."
 
 
@@ -61,6 +75,9 @@ class UI(Protocol):
 
     def tool_progress(self, call_id: str, text: str) -> None:
         """What a long-running tool call (a sub-agent) is doing right now."""
+
+    def retrying(self, attempt: int, limit: int, reason: str) -> None:
+        """A model request failed with a transient error and is being retried."""
 
     def show_history(self, items: list[Any]) -> None:
         """Display a restored conversation."""
@@ -111,6 +128,10 @@ class PlainUI:
 
     def tool_progress(self, call_id: str, text: str) -> None:
         self.console.print(f"  [dim]│ {escape(text)}[/dim]", highlight=False)
+
+    def retrying(self, attempt: int, limit: int, reason: str) -> None:
+        message = t(RETRYING, reason=escape(reason), attempt=attempt, limit=limit)
+        self.console.print(f"[yellow]{message}[/yellow]", highlight=False)
 
     def show_history(self, items: list[Any]) -> None:
         turns = sum(1 for item in items if isinstance(item, dict) and item.get("role") == "user")
@@ -164,6 +185,69 @@ def complete_history(items: list[Any]) -> list[Any]:
     return kept
 
 
+class ContextGuard:
+    """Keeps one run inside the context window by compacting when it fills up.
+
+    The SDK keeps the run's full item list. The guard remembers how many leading
+    items a summary stands for and swaps that prefix out before every model call
+    (`filter`) and once more when the run's items are read back (`collapse`).
+    The main conversation and every sub-agent have their own guard.
+    """
+
+    def __init__(self, session: Session, call_id: str | None = None) -> None:
+        self.session = session
+        self.call_id = call_id  # set for a sub-agent: progress goes to that tool call
+        self.compacted: tuple[int, dict[str, Any]] | None = None
+        self.floor = 0  # context size right after the last compaction
+        self.reported = 0  # sub-agents: context size last reported by the provider
+
+    @property
+    def main(self) -> bool:
+        return self.call_id is None
+
+    def collapse(self, items: list[Any]) -> list[Any]:
+        """Apply the summary made during this run to the run's full item list."""
+        if self.compacted is None or len(items) < self.compacted[0]:
+            return items
+        count, summary = self.compacted
+        return [summary, *items[count:]]
+
+    async def filter(self, data: CallModelData[AgentContext]) -> ModelInputData:
+        """Called by the SDK before every model call."""
+        session, ui = self.session, self.session.ui
+        model_data = data.model_data
+        items = self.collapse(list(model_data.input))
+        estimate = estimate_tokens(items)
+        tokens = max(session.context_tokens if self.main else self.reported, estimate)
+        if self.main and not session._usage_reported:
+            session.context_tokens = estimate  # the provider sends no usage: show our estimate
+        window = session.context_window
+        if session.auto_compact and tokens >= window * COMPACT_AT and tokens > self.floor * 1.25:
+            keep = min(KEEP_RECENT_MAX, int(window * KEEP_RECENT_SHARE))
+            if self.main:
+                ui.compaction("start", tokens)
+            else:
+                ui.tool_progress(self.call_id or "", t("compacting its context"))
+            try:
+                compacted = await session._summarise_prefix(items, keep)
+            except Exception:  # a failed summary must not fail the run
+                compacted = None
+                if self.main:
+                    ui.compaction("failed", tokens)
+            if compacted is not None:
+                cut, summary = compacted
+                # `cut` counts items of the collapsed list; convert it to the full list,
+                # where an earlier summary stands for `replaced` items instead of one.
+                replaced = self.compacted[0] - 1 if self.compacted else 0
+                self.compacted = (replaced + cut, summary)
+                items = [summary, *items[cut:]]
+                self.floor = self.reported = estimate_tokens(items)
+                if self.main:
+                    session.context_tokens = self.floor
+                    ui.compaction("done", tokens, self.floor)
+        return ModelInputData(input=items, instructions=model_data.instructions)
+
+
 class Session:
     """Holds the conversation and runs turns against the agent."""
 
@@ -179,6 +263,7 @@ class Session:
         context_window: int = DEFAULT_CONTEXT_WINDOW,
         auto_compact: bool = True,
         store: SessionStore | None = None,
+        retries: int = DEFAULT_RETRIES,
     ) -> None:
         self.context = AgentContext(
             workspace=workspace, auto_approve=auto_approve, skills=dict(skills or {})
@@ -190,6 +275,8 @@ class Session:
         self._approval_lock = asyncio.Lock()  # sub-agents run in parallel; ask one at a time
         self.model = model
         self.mcp_servers = list(mcp_servers or [])
+        self.retries = retries  # retries of a model request after a transient error
+        self.retry_delay = 1.0  # seconds before the first retry; doubles each time
         self.agent = self._build_agent()
         self.max_turns = max_turns
         self.ui: UI = ui or PlainUI()
@@ -201,11 +288,7 @@ class Session:
         # The window for models without one of their own; set by the CLI and /context.
         self.default_context_window = context_window
         self.auto_compact = auto_compact
-        # During a turn: how many leading items of the run's input have been replaced
-        # by a summary, and that summary. The SDK keeps the full list; we swap the
-        # prefix out on every model call and once more when the turn ends.
-        self._compacted: tuple[int, dict[str, Any]] | None = None
-        self._compact_floor = 0  # context size right after the last compaction
+        self._guard = ContextGuard(self)  # compaction state of the main conversation
         self._usage_reported = False
         self.info: dict[str, str] = {}  # endpoint details shown by /status
         self.pet: Pet | None = None
@@ -215,9 +298,44 @@ class Session:
         self.fetch_models: Callable[[], Awaitable[list[str]]] | None = None
         self._fetched_models: list[str] | None = None
 
+    def _model_settings(self) -> ModelSettings:
+        if not self.retries:
+            return ModelSettings()
+
+        # A plain function rather than a bound method: the SDK deep-copies model
+        # settings, and copying a method would try to copy the whole session.
+        def policy(context: RetryPolicyContext) -> bool | RetryDecision:
+            """Retry transient failures (rate limits, overload, network) with backoff."""
+            error = context.normalized
+            transient = (
+                error.is_network_error or error.is_timeout or error.status_code in RETRY_STATUSES
+            )
+            # Once output has been streamed, a retry would show it twice.
+            if not transient or context.response_started or error.is_abort:
+                return False
+            reason = f"HTTP {error.status_code}" if error.status_code else type(context.error).__name__
+            self.ui.retrying(context.attempt, context.max_retries, reason)
+            return RetryDecision(retry=True, delay=error.retry_after)
+
+        retry = ModelRetrySettings(
+            max_retries=self.retries,
+            backoff={
+                "initial_delay": self.retry_delay,
+                "max_delay": 30.0,
+                "multiplier": 2.0,
+                "jitter": True,
+            },
+            policy=policy,
+        )
+        return ModelSettings(retry=retry)
+
     def _build_agent(self) -> Agent[AgentContext]:
         return build_agent(
-            self.context.workspace, self.model, self.context.skills, self.mcp_servers
+            self.context.workspace,
+            self.model,
+            self.context.skills,
+            self.mcp_servers,
+            self._model_settings(),
         )
 
     @property
@@ -250,7 +368,7 @@ class Session:
         """Start a new conversation. The old one stays on disk and can be resumed."""
         self.history = []
         self.context_tokens = 0
-        self._compact_floor = 0
+        self._guard.floor = 0
         self.session_id = new_session_id()
         self._created = ""
 
@@ -292,7 +410,7 @@ class Session:
         self.input_tokens = record.input_tokens
         self.output_tokens = record.output_tokens
         self.context_tokens = record.context_tokens or estimate_tokens(self.history)
-        self._compact_floor = 0
+        self._guard.floor = 0
         self._usage_reported = False
 
     # ------------------------------------------------------------- approvals
@@ -321,15 +439,30 @@ class Session:
 
     async def run_subagent(self, call_id: str, agent_type: str, prompt: str) -> str:
         """Run a sub-agent in a fresh context and return its final report."""
-        agent = build_subagent(self.context.workspace, agent_type, self.model, self.mcp_servers)
+        agent = build_subagent(
+            self.context.workspace, agent_type, self.model, self.mcp_servers, self._model_settings()
+        )
         run_input: Any = prompt
         tool_calls = 0
+        # Sub-agents read a lot; give each its own compaction so it cannot overflow.
+        guard = ContextGuard(self, call_id=call_id)
+        run_config = RunConfig(call_model_input_filter=guard.filter)
         while True:
             result = Runner.run_streamed(
-                agent, run_input, context=self.context, max_turns=SUBAGENT_MAX_TURNS
+                agent,
+                run_input,
+                context=self.context,
+                max_turns=SUBAGENT_MAX_TURNS,
+                run_config=run_config,
             )
             try:
                 async for event in result.stream_events():
+                    if event.type == "raw_response_event":
+                        if event.data.type == "response.completed":
+                            usage = getattr(event.data.response, "usage", None)
+                            if usage is not None and usage.input_tokens:
+                                guard.reported = usage.input_tokens + usage.output_tokens
+                        continue
                     if event.type != "run_item_stream_event":
                         continue
                     if event.item.type == "tool_call_item":
@@ -363,13 +496,6 @@ class Session:
         """How full the context window is, from 0 to 1 (or more)."""
         return self.context_tokens / self.context_window if self.context_window else 0.0
 
-    def _collapse(self, items: list[Any]) -> list[Any]:
-        """Apply the summary made during this turn to the run's full item list."""
-        if self._compacted is None or len(items) < self._compacted[0]:
-            return items
-        count, summary = self._compacted
-        return [summary, *items[count:]]
-
     async def _summarise_prefix(
         self, items: list[Any], keep_tokens: int, instructions: str = ""
     ) -> tuple[int, dict[str, Any]] | None:
@@ -399,38 +525,10 @@ class Session:
             return None
         cut, summary = compacted
         self.history = [summary, *self.history[cut:]]
-        self.context_tokens = self._compact_floor = estimate_tokens(self.history)
+        self.context_tokens = self._guard.floor = estimate_tokens(self.history)
         self.save()
         self.ui.compaction("done", before, self.context_tokens)
         return before, self.context_tokens
-
-    async def _filter_model_input(self, data: CallModelData[AgentContext]) -> ModelInputData:
-        """Called by the SDK before every model call: compact when the window fills up."""
-        model_data = data.model_data
-        items = self._collapse(list(model_data.input))
-        estimate = estimate_tokens(items)
-        tokens = max(self.context_tokens, estimate)
-        if not self._usage_reported:
-            self.context_tokens = estimate  # the provider sends no usage: show our estimate
-        due = tokens >= self.context_window * COMPACT_AT and tokens > self._compact_floor * 1.25
-        if self.auto_compact and due:
-            keep = min(KEEP_RECENT_MAX, int(self.context_window * KEEP_RECENT_SHARE))
-            self.ui.compaction("start", tokens)
-            try:
-                compacted = await self._summarise_prefix(items, keep)
-            except Exception:  # a failed summary must not fail the turn
-                compacted = None
-                self.ui.compaction("failed", tokens)
-            if compacted is not None:
-                cut, summary = compacted
-                # `cut` counts items of the collapsed list; convert it to the full list,
-                # where an earlier summary stands for `replaced` items instead of one.
-                replaced = self._compacted[0] - 1 if self._compacted else 0
-                self._compacted = (replaced + cut, summary)
-                items = [summary, *items[cut:]]
-                self.context_tokens = self._compact_floor = estimate_tokens(items)
-                self.ui.compaction("done", tokens, self.context_tokens)
-        return ModelInputData(input=items, instructions=model_data.instructions)
 
     async def run_turn(self, text: str) -> str | None:
         """Run one user turn to completion, pausing for tool approvals.
@@ -441,8 +539,8 @@ class Session:
         """
         run_input: Any = [*self.history, {"role": "user", "content": text}]
         calls: dict[str, tuple[str, dict[str, Any]]] = {}
-        self._compacted = None
-        run_config = RunConfig(call_model_input_filter=self._filter_model_input)
+        self._guard.compacted = None
+        run_config = RunConfig(call_model_input_filter=self._guard.filter)
         while True:
             result = Runner.run_streamed(
                 self.agent,
@@ -464,8 +562,8 @@ class Session:
                 self._keep_partial(result)
                 raise
             run_input = state
-        self.history = self._collapse(result.to_input_list())
-        self._compacted = None
+        self.history = self._guard.collapse(result.to_input_list())
+        self._guard.compacted = None
         usage = result.context_wrapper.usage
         self.input_tokens += usage.input_tokens
         self.output_tokens += usage.output_tokens
@@ -476,10 +574,10 @@ class Session:
     def _keep_partial(self, result: Any, note: str | None = None) -> None:
         """Keep what an unfinished turn already did, optionally followed by a note."""
         try:
-            items = complete_history(self._collapse(result.to_input_list()))
+            items = complete_history(self._guard.collapse(result.to_input_list()))
         except Exception:  # never let bookkeeping mask the original error
             return
-        self._compacted = None
+        self._guard.compacted = None
         self.history = [*items, *([{"role": "user", "content": note}] if note else [])]
         self.save()
 

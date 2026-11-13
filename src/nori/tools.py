@@ -6,7 +6,9 @@ import asyncio
 import fnmatch
 import os
 import re
+import shutil
 import signal
+import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +24,7 @@ MAX_OUTPUT_CHARS = 30_000
 MAX_READ_LINES = 2000
 MAX_LINE_CHARS = 2000
 MAX_SEARCH_RESULTS = 200
+RIPGREP_TIMEOUT = 30
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache"}
 
 
@@ -219,25 +222,49 @@ def glob_files(ctx: Ctx, pattern: str, path: str = ".") -> str:
     return out
 
 
-@function_tool(failure_error_function=_tool_error)
-def grep(
-    ctx: Ctx, pattern: str, path: str = ".", include: str = "", ignore_case: bool = False
-) -> str:
-    """Search file contents with a regular expression. Returns `file:line: text` matches.
+def _ripgrep(
+    ctx: Ctx, root: Path, pattern: str, include: str, ignore_case: bool
+) -> list[str] | None:
+    """Search with ripgrep. Returns None if it is unavailable or rejects the pattern."""
+    executable = shutil.which("rg")
+    if executable is None:
+        return None
+    command = [
+        executable, "--line-number", "--with-filename", "--no-heading", "--color", "never",
+        "--hidden", "--sort", "path", "--max-columns", "1000", "--max-count", "200",
+    ]  # fmt: skip
+    for directory in sorted(SKIP_DIRS):
+        command += ["--glob", f"!{directory}"]
+    if include:
+        command += ["--glob", include]
+    if ignore_case:
+        command.append("--ignore-case")
+    command += ["--regexp", pattern, "--", str(root)]
+    try:
+        done = subprocess.run(
+            command, capture_output=True, text=True, errors="replace", timeout=RIPGREP_TIMEOUT
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if done.returncode not in (0, 1):  # 2: bad pattern or another error; let Python try
+        return None
+    results = []
+    for line in done.stdout.splitlines():
+        file, _, rest = line.partition(":")
+        number, _, text = rest.partition(":")
+        if not number.isdigit():
+            continue
+        results.append(f"{_rel(ctx, Path(file))}:{number}: {text.strip()[:300]}")
+    return results
 
-    Args:
-        pattern: Python regular expression to search for.
-        path: File or directory to search, relative to the workspace root.
-        include: Optional file name glob to filter by, e.g. "*.py".
-        ignore_case: Match case-insensitively.
-    """
+
+def _python_grep(
+    ctx: Ctx, root: Path, pattern: str, include: str, ignore_case: bool
+) -> list[str]:
     try:
         regex = re.compile(pattern, re.IGNORECASE if ignore_case else 0)
     except re.error as exc:
         raise ToolError(f"invalid regular expression: {exc}") from exc
-    root = _resolve(ctx, path)
-    if not root.exists():
-        raise ToolError(f"{path} does not exist")
     files = [root] if root.is_file() else _walk(root)
     results: list[str] = []
     for file in files:
@@ -250,9 +277,33 @@ def grep(
         for number, line in enumerate(text.splitlines(), 1):
             if regex.search(line):
                 results.append(f"{_rel(ctx, file)}:{number}: {line.strip()[:300]}")
-                if len(results) >= MAX_SEARCH_RESULTS:
-                    results.append(f"... [stopped after {MAX_SEARCH_RESULTS} matches]")
-                    return "\n".join(results)
+                if len(results) > MAX_SEARCH_RESULTS:
+                    return results
+    return results
+
+
+@function_tool(failure_error_function=_tool_error)
+def grep(
+    ctx: Ctx, pattern: str, path: str = ".", include: str = "", ignore_case: bool = False
+) -> str:
+    """Search file contents with a regular expression. Returns `file:line: text` matches.
+
+    Args:
+        pattern: Regular expression to search for.
+        path: File or directory to search, relative to the workspace root.
+        include: Optional file name glob to filter by, e.g. "*.py".
+        ignore_case: Match case-insensitively.
+    """
+    root = _resolve(ctx, path)
+    if not root.exists():
+        raise ToolError(f"{path} does not exist")
+    # ripgrep is far faster on large trees (and skips files ignored by git);
+    # the pure-Python search is the fallback when it is not installed.
+    results = _ripgrep(ctx, root, pattern, include, ignore_case)
+    if results is None:
+        results = _python_grep(ctx, root, pattern, include, ignore_case)
+    if len(results) > MAX_SEARCH_RESULTS:
+        results = [*results[:MAX_SEARCH_RESULTS], f"... [stopped after {MAX_SEARCH_RESULTS} matches]"]
     return "\n".join(results) if results else "No matches found."
 
 

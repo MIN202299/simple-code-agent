@@ -69,7 +69,7 @@ from .render import (
     split_blocks,
     tool_label,
 )
-from .session import COMPACTED, COMPACTION_FAILED, Session
+from .session import COMPACTED, COMPACTION_FAILED, RETRYING, Session
 from .tools import SKIP_DIRS
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"  # running tool calls
@@ -516,6 +516,10 @@ class Tui:
         if call_id in self._calls:
             self._calls[call_id]["progress"] = text
             self.app.invalidate()
+
+    def retrying(self, attempt: int, limit: int, reason: str) -> None:
+        message = t(RETRYING, reason=reason, attempt=attempt, limit=limit)
+        self.emit(Text(f"  ✻ {message}", style="yellow"), gap=True)
 
     def show_history(self, items: list[Any]) -> None:
         for entry in render_history(items):

@@ -6,7 +6,7 @@ import datetime
 import platform
 from pathlib import Path
 
-from agents import Agent, Model
+from agents import Agent, Model, ModelSettings
 from agents.mcp import MCPServer
 
 from .branding import APP_NAME
@@ -96,6 +96,7 @@ def build_subagent(
     agent_type: str,
     model: str | Model | None = None,
     mcp_servers: list[MCPServer] | None = None,
+    model_settings: ModelSettings | None = None,
 ) -> Agent[AgentContext]:
     """Create a sub-agent of the given type with a fresh context."""
     instructions = SUBAGENT_PROMPT.format(
@@ -110,6 +111,7 @@ def build_subagent(
         tools=list(SUBAGENT_TOOLS[agent_type]),
         mcp_servers=list(mcp_servers or []) if agent_type == "general" else [],
         model=model,
+        model_settings=model_settings or ModelSettings(),
     )
 
 
@@ -118,6 +120,7 @@ def build_agent(
     model: str | Model | None = None,
     skills: dict[str, Skill] | None = None,
     mcp_servers: list[MCPServer] | None = None,
+    model_settings: ModelSettings | None = None,
 ) -> Agent[AgentContext]:
     """Create the coding agent. `model=None` uses the SDK's default model."""
     return Agent[AgentContext](
@@ -126,4 +129,5 @@ def build_agent(
         tools=list(ALL_TOOLS),
         mcp_servers=list(mcp_servers or []),
         model=model,
+        model_settings=model_settings or ModelSettings(),
     )

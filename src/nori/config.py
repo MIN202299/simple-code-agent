@@ -33,7 +33,7 @@ from .i18n import DEFAULT_LANGUAGE, normalize_language, t
 from .mcp_config import expand_env
 
 CONFIG_KEYS = ("base_url", "api_key", "model", "api")
-EXTRA_KEYS = ("max_turns", "context_window", "auto_compact", "language", "models")
+EXTRA_KEYS = ("max_turns", "context_window", "auto_compact", "language", "models", "retries")
 # Turn limit for runs nobody is watching (one-shot and piped). The interactive UI
 # has no limit by default: compaction handles long tasks and Esc stops a runaway one.
 UNATTENDED_MAX_TURNS = 200
@@ -57,6 +57,7 @@ class Settings:
     auto_compact: bool = True
     default_context_window: int = DEFAULT_CONTEXT_WINDOW  # for models without their own
     language: str = DEFAULT_LANGUAGE
+    retries: int = 4  # retries of a model request after a transient error
     # Models offered by /model: {"name": ..., "context_window": ... (optional)}
     models: tuple[dict[str, Any], ...] = ()
 
@@ -132,6 +133,11 @@ def load_config(path: Path) -> dict[str, Any]:
         if not isinstance(data["auto_compact"], bool):
             raise ConfigError(f"{path}: " + t("auto_compact must be true or false"))
         config["auto_compact"] = data["auto_compact"]
+    if data.get("retries") is not None:
+        retries = data["retries"]
+        if isinstance(retries, bool) or not isinstance(retries, int) or not 0 <= retries <= 20:
+            raise ConfigError(f"{path}: " + t("retries must be an integer from 0 to 20"))
+        config["retries"] = retries
     if data.get("language") not in (None, ""):
         language = normalize_language(str(data["language"]))
         if language is None:
@@ -208,6 +214,7 @@ def resolve_settings(
             MIN_CONTEXT_WINDOW,
         ),
         language=resolve_language(config, env, language),
+        retries=config.get("retries", 4),
         models=models,
     )
 

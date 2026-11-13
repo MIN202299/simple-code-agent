@@ -336,6 +336,7 @@ def main(argv: list[str] | None = None) -> int:
                 context_window=settings.context_window,
                 auto_compact=settings.auto_compact,
                 store=None if args.no_save else store,
+                retries=settings.retries,
                 ui=PlainUI(console),
                 skills=skills,
                 mcp_servers=servers,
