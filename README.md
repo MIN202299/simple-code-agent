@@ -2,128 +2,139 @@
 
 ```
  /\_/\ ♪
-( ^.^ )    Nori — 终端里的 AI 编程搭档
+( ^.^ )    Nori — your AI pair programmer in the terminal
  > ^ <~
 ```
 
-Nori 是一个基于 [OpenAI Agents SDK](https://github.com/openai/openai-agents-python) 的命令行 code agent：在终端里用自然语言让它读代码、改代码、跑命令。名字来自常驻输入框旁边的那只小黑猫。
+**English** · [简体中文](README.zh-CN.md)
 
-## 功能
+Nori is a coding agent for the terminal, built on the [OpenAI Agents SDK](https://github.com/openai/openai-agents-python). Describe what you want in plain language and it reads code, edits files and runs commands for you. It works with OpenAI and with any OpenAI-compatible endpoint. The name comes from the small black cat that lives next to the input box.
 
-- **TUI**：底部固定输入框，流式 Markdown 渲染，带状态的工具调用与 diff 预览，审批对话框，`/` 命令和 `@` 文件补全
-- **宠物 Nori**：一只会随 agent 状态变表情、陪你干活会升级的小猫
-- **上下文管理**：可配置上下文窗口大小，支持 `/compact` 手动压缩和快满时自动压缩
-- **会话恢复**：对话自动保存，`nori -c` 继续上一次，`/resume` 挑一个恢复
-- **子 agent**：把搜索、调研或独立的子任务交给拥有独立上下文的子 agent，可并行
-- **可打包**：一条命令打成不依赖 Python 的单文件可执行程序
-- **配置文件**：在 `~/.nori/config.json` 中配置 base url、api key 和模型，首次运行有交互式向导
-- 内置工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`glob_files`、`grep`、`run_shell`
-- **Skill**：从 `SKILL.md` 加载可复用的任务指引，按需加载，也可用 `/<skill>` 直接调用
-- **MCP**：通过 `.mcp.json` 接入 stdio / HTTP / SSE 的 MCP 服务器，其工具自动提供给 agent
-- **任务计划**：多步骤任务会用 `update_plan` 维护一份清单并显示在终端
-- 写文件、执行命令前需要人工确认（使用 SDK 原生的工具审批机制），可选"本次会话不再询问"或全部自动批准
-- 文件工具限制在工作区目录内
-- 工作区根目录有 `AGENTS.md`（或 `CLAUDE.md`）时自动作为项目说明注入系统提示
-- 支持 Responses API 和 Chat Completions API，可接第三方兼容服务
+## Features
 
-## 安装
+- **Terminal UI** — pinned input box, streamed Markdown, tool calls with live status and diffs, approval dialogs, a `/` command panel and `@` file completion
+- **Permission modes** — `default`, `accept-edits`, `plan` and `auto`, switched with Shift+Tab
+- **Plan mode** — the agent researches read-only and proposes a plan; nothing changes until you approve it
+- **Allow rules** — "don't ask again" for a command prefix, a host or a tool, remembered per project
+- **Undo** — `/undo` reverts the file changes of the last turn
+- **Context management** — configurable context window, `/compact`, and automatic compaction when it fills up
+- **Sessions** — conversations are saved; continue the last one with `nori -c` or pick one with `/resume`
+- **Sub-agents** — delegate research or independent subtasks to agents with their own context, in parallel
+- **Web access** — `web_search` and `web_fetch`
+- **Images** — mention an image file or paste one from the clipboard
+- **Background commands** — start a dev server and keep working
+- **`!command`** — run a shell command yourself and share its output with the agent
+- **Skills** and **MCP servers**
+- **Model switching** — a `/model` picker, with per-model context windows
+- **English and Chinese interface**
+- **A pet** that reacts to what the agent is doing and levels up with you
+- **Standalone executables** for Linux, macOS and Windows; Homebrew formula
 
-**下载可执行程序**（不需要 Python）：到 [Releases](https://github.com/MIN202299/simple-code-agent/releases) 页面下载对应系统的文件，改名为 `nori` 放进 `PATH`。macOS / Linux 上需要先 `chmod +x nori`；macOS 首次运行如被拦截，执行 `xattr -d com.apple.quarantine nori`。
+## Install
 
-**从源码安装**（需要 Python 3.11+）：
+**Homebrew** (macOS on Apple silicon, Linux x86_64):
 
 ```bash
-pip install -e .          # 或: uv pip install -e .
-nori --setup        # 填写 base url、api key、模型
+brew tap min202299/nori https://github.com/MIN202299/simple-code-agent
+brew install min202299/nori/nori
 ```
 
-## 配置
+**Download** — get the file for your system from [Releases](https://github.com/MIN202299/simple-code-agent/releases). No Python needed.
 
-配置保存在 `~/.nori/config.json`：
+- `nori-<os>-<arch>.tar.gz` (`.zip` on Windows) unpacks to a `nori/` folder; run `nori/nori`. This is the faster one to start.
+- `nori-<os>-<arch>` is a single executable. Rename it to `nori`, `chmod +x` it and put it on your `PATH`. It unpacks itself on every start, which costs a few seconds.
+- On macOS, a file downloaded with a browser is quarantined: run `xattr -dr com.apple.quarantine <file or folder>` once.
+
+**From source** (Python 3.11+):
+
+```bash
+pip install -e .      # or: uv pip install -e .   ·   pipx install .
+```
+
+Then configure it once:
+
+```bash
+nori --setup          # asks for base URL, API key, model and context window
+```
+
+## Usage
+
+```bash
+nori                              # open the UI in the current directory
+nori -C path/to/project           # work in another directory
+nori -c                           # continue the last session here
+nori "add unit tests for utils.py"   # run one task and exit (plain output, good for scripts)
+nori --mode plan                  # start in plan mode
+nori -m other-model -y            # another model for this run, approving everything
+```
+
+| Option | Meaning |
+| --- | --- |
+| `-m, --model` | Model name; overrides the config file |
+| `--base-url` | API base URL; overrides the config file |
+| `--api {responses,chat}` | Which API to use |
+| `--mode MODE` | Permission mode: `default`, `accept-edits`, `plan` or `auto` |
+| `-y, --yes` | Same as `--mode auto`: approve everything |
+| `-c, --continue` | Continue the most recent session in this workspace |
+| `-r, --resume ID` | Resume a session by ID (a prefix is enough) |
+| `--list-sessions` | List the saved sessions of this workspace and exit |
+| `--no-save` | Do not save this session |
+| `-C, --cwd` | Workspace directory (default: current directory) |
+| `--context-window TOKENS` | Context window of the model, e.g. `200k` (default 128000) |
+| `--no-auto-compact` | Do not compact automatically |
+| `--max-turns N` | Maximum model turns per task (UI: unlimited; one-shot and plain mode: 200) |
+| `--lang LANG` | Interface language: `en` or `zh` |
+| `--plain` | Plain line-by-line output instead of the UI |
+| `--no-mcp` / `--no-skills` | Do not load MCP servers / skills |
+| `--config PATH` | Config file path |
+| `--setup` | Create or edit the config file, then exit |
+
+When standard input or output is not a terminal (a pipe, for example), plain mode is used automatically.
+
+## Configuration
+
+Settings live in `~/.nori/config.json`:
 
 ```json
 {
   "base_url": "https://your-provider.example/v1",
   "api_key": "sk-...",
   "model": "your-model-name",
-  "api": "chat"
+  "context_window": 128000,
+  "language": "en"
 }
 ```
 
-| 字段 | 说明 |
+| Key | Meaning |
 | --- | --- |
-| `api_key` | API Key。可以写成 `${ENV_VAR}` 引用环境变量 |
-| `base_url` | API 地址；省略则使用 OpenAI 官方地址 |
-| `model` | 模型名；省略则使用 SDK 默认模型 |
-| `api` | `responses` 或 `chat`。省略时：设置了非 OpenAI 的 `base_url` 用 `chat`，否则用 `responses` |
-| `max_turns` | 单个任务的最大模型轮数（每次模型回复算一轮）。TUI 里默认不限；一次性执行和简单模式默认 200 |
-| `context_window` | 模型的上下文窗口大小（token 数），默认 128000。按你所用模型的实际值填写 |
-| `auto_compact` | 上下文快满时是否自动压缩会话，默认 `true` |
-| `language` | 界面语言：`en`（默认）或 `zh` |
-| `models` | `/model` 面板里列出的模型。每项是模型名，或 `{"name": ..., "context_window": ...}` 为该模型单独指定窗口大小 |
+| `api_key` | API key. May be written as `${ENV_VAR}` to read it from the environment |
+| `base_url` | API base URL; omit for the official OpenAI endpoint |
+| `model` | Model name; omit for the SDK's default |
+| `api` | `responses` or `chat`. Default: `chat` when `base_url` is not OpenAI's, otherwise `responses` |
+| `context_window` | Context window of the model in tokens (default 128000) |
+| `auto_compact` | Compact automatically when the context fills up (default `true`) |
+| `models` | Models offered by `/model`: names, or `{"name": ..., "context_window": ...}` |
+| `mode` | Permission mode to start in (default `default`) |
+| `language` | `en` (default) or `zh` |
+| `retries` | Retries of a model request after a transient error (default 4, `0` turns it off) |
+| `max_turns` | Maximum model turns per task |
+| `search_engine` | `duckduckgo` (default) or `bing` |
 
-- `nori --setup` 会交互式地创建或修改这个文件（Key 输入不回显，文件权限为 600）。
-- 没有配置 Key 时，首次启动会自动进入这个向导。
-- 用 `--config PATH` 或环境变量 `NORI_CONFIG` 可以换一个配置文件，方便在多个服务之间切换。
-- 从旧版本升级时，`~/.code_agent` 目录会在首次启动时自动改名为 `~/.nori`。原来的 `CODE_AGENT_*` 环境变量需要手动改成 `NORI_*`。
-- 只读取用户级配置，不读取项目目录里的配置：否则一个仓库就能通过改 `base_url` 把你的 Key 发到别处。
+Precedence, highest first: command-line options, `NORI_*` environment variables, the config file, then the generic `OPENAI_API_KEY` / `OPENAI_BASE_URL`. The config file outranks `OPENAI_*` because it is written for this tool, while those are shared by every OpenAI client.
 
-优先级从高到低：
+Only the user-level file is read. A project-level file is deliberately not supported: a repository that could set `base_url` could redirect your API key.
 
-1. 命令行参数 `--model`、`--base-url`、`--api`、`--max-turns`、`--context-window`、`--no-auto-compact`
-2. 环境变量 `NORI_MODEL`、`NORI_API`
-3. 配置文件
-4. 通用环境变量 `OPENAI_API_KEY`、`OPENAI_BASE_URL`
-
-配置文件优先于 `OPENAI_*`，因为它是专门为本工具写的，而 `OPENAI_*` 是所有 OpenAI 客户端共用的。
-
-## 使用
-
-```bash
-nori                          # 在当前目录打开 TUI
-nori -C path/to/project       # 指定工作区
-nori "给 utils.py 补上单元测试"  # 执行一个任务后退出（逐行输出，适合脚本）
-nori -m other-model -y        # 临时换模型，并自动批准所有操作
-```
-
-| 参数 | 说明 |
+| Variable | Meaning |
 | --- | --- |
-| `-m, --model` | 模型名，覆盖配置文件 |
-| `--base-url` | API 地址，覆盖配置文件 |
-| `--api {responses,chat}` | 使用哪种 API |
-| `--config PATH` | 配置文件路径 |
-| `--setup` | 交互式创建或修改配置文件后退出 |
-| `-c, --continue` | 继续这个工作区最近的一次会话 |
-| `-r, --resume ID` | 恢复指定的会话（ID 可只写开头几位） |
-| `--list-sessions` | 列出这个工作区保存的会话后退出 |
-| `--no-save` | 不保存本次会话 |
-| `-C, --cwd` | 工作区目录，默认当前目录 |
-| `-y, --yes` | 自动批准写文件和执行命令 |
-| `--plain` | 不使用 TUI，改用逐行输出的简单模式 |
-| `--no-mcp` / `--no-skills` | 不加载 MCP 服务器 / skill |
-| `--max-turns` | 单个任务的最大模型轮数。TUI 默认不限；一次性执行和简单模式默认 200 |
-| `--context-window TOKENS` | 模型的上下文窗口大小，如 `200k`，默认 128000 |
-| `--no-auto-compact` | 上下文快满时不自动压缩会话 |
-| `--lang LANG` | 界面语言：`en` 或 `zh` |
+| `NORI_CONFIG` | Config file path |
+| `NORI_MODEL`, `NORI_API`, `NORI_LANG` | Override the corresponding settings |
+| `OPENAI_API_KEY`, `OPENAI_BASE_URL` | Used when the config file has no such setting |
+| `NORI_TRACING` | Set to `1` to enable the SDK's tracing, which uploads run data to OpenAI (off by default) |
 
-标准输入或输出不是终端时（例如管道），自动使用简单模式。
-
-## TUI
+## The interface
 
 ```
-╭─ Nori v0.0.1-beta-1 ──────────────────────────────────────────╮
-│                                                        │
-│   /\_/\ ♪    终端里的 AI 编程搭档                       │
-│  ( ^.^ )                                               │
-│   > ^ <~     模型    your-model-name                   │
-│  Nori Lv.3   接口    https://… · chat                  │
-│              工作区  ~/project (⎇ main)                │
-│              扩展    2 个 skill · 1 个 MCP 服务器       │
-│                                                        │
-│  输入任务开始 · / 命令 · @ 引用文件 · ? 快捷键           │
-╰────────────────────────────────────────────────────────╯
-
-❯ 修复 calc.py 里的 bug
+❯ fix the bug in calc.py
 
 ● Read(calc.py)
   ⎿  Read 2 lines
@@ -133,207 +144,181 @@ nori -m other-model -y        # 临时换模型，并自动批准所有操作
      +    return a + b
   ⎿  Edited calc.py (1 replacement)  +1 -1
 
-● 减号写错了，已经改成加号。
+● The minus sign was wrong; it is a plus now.
 
-  =^.^= 完成 · 6s · 2 次工具调用 · ↑ 3.1k ↓ 212
+  =^.^= Done · 6s · 2 tool calls · ↑ 3.1k ↓ 212
 
 ──────────────────────────────────────────────  /\_/\
-❯ 描述你想做的事…                              ( o.o )
+❯ Describe what you want to do…                ( o.o )
 ──────────────────────────────────────────────  > ^ <
-  ? 快捷键 · / 命令 · @ 文件      your-model-name · 上下文 3.3k · ⎇ main
+  ? shortcuts · / commands · @ files     your-model · context 3.3k (3%) · ⎇ main
 ```
 
-界面是内联绘制的，不占用备用屏幕：对话记录直接进入终端的滚动缓冲区，可以照常滚动、选择和复制。
+The UI is drawn inline, not on the alternate screen: the transcript goes into your terminal's normal scrollback, so you can scroll, select and copy as usual.
 
-- **工具调用**：执行中显示在底部的实时区（转圈和计时），结束后连同结果写入记录，圆点绿色表示成功、红色表示失败或被拒绝。改文件时附带 diff。
-- **状态行**：一个闪烁的星形动画（`✻`），加上正在做什么、已用时间和本轮输出的 token 数。
-- **底栏**：左边是模式和提示，右边是模型、当前上下文大小和 git 分支。开启自动批准后输入框边线变色。
-- **排队**：agent 工作时可以继续输入，发送的消息在当前任务结束后依次执行。
-- **中断与续跑**：中断任务或达到最大轮数后，已完成的步骤保留在上下文里，输入"继续"即可接着做。
-- **防误触**：审批对话框弹出后的前半秒不响应按键，避免正在输入的内容误批准操作。
-
-| 按键 | 作用 |
+| Key | Action |
 | --- | --- |
-| `Enter` | 发送 |
-| `Alt+Enter` / `Ctrl-J` | 换行 |
-| `Esc` | 中断正在执行的任务；关闭菜单 |
-| `/` | 命令面板：支持模糊匹配（`/cmp` 能找到 `/compact`），`Tab` 补全，`Enter` 执行 |
-| `@` | 文件菜单，按路径模糊匹配，`Tab` / `Enter` 插入 |
-| `?` | 输入框为空时显示快捷键 |
-| `↑` / `↓` | 历史输入；在菜单和审批对话框中移动选择 |
-| `Shift+Tab` | 开关自动批准 |
-| `Ctrl-C` | 中断任务；空闲时清空输入，再按一次退出 |
-| `Ctrl-D` | 退出 |
-| `Ctrl-L` | 清屏 |
+| `Enter` | Send |
+| `Alt+Enter` / `Ctrl-J` | New line |
+| `Esc` | Interrupt the running task; close a menu |
+| `Shift+Tab` | Switch permission mode |
+| `/` | Command panel: fuzzy matching, `Tab` completes, `Enter` runs |
+| `@` | File menu: fuzzy path matching |
+| `!` | Run a shell command yourself |
+| `Ctrl-V` | Paste an image from the clipboard |
+| `?` | Show shortcuts (when the input is empty) |
+| `↑` / `↓` | Input history; move in menus and dialogs |
+| `Ctrl-C` | Interrupt; when idle, clear the input, then quit on the second press |
+| `Ctrl-D` | Quit |
+| `Ctrl-L` | Clear the screen |
 
-命令：
+You can keep typing while the agent works: messages are queued and run in order. After an interruption the finished steps stay in context, so "continue" picks up where it stopped.
 
-| 命令 | 说明 |
+| Command | Action |
 | --- | --- |
-| `/help` | 显示帮助 |
-| `/clear` | 清空对话上下文 |
-| `/resume [序号]` | 列出这个工作区之前的会话；带序号则恢复那一个 |
-| `/context [大小]` | 查看或设置模型的上下文窗口大小，如 `/context 200k` |
-| `/compact [说明]` | 把对话压缩成摘要以释放上下文，可附带要重点保留什么 |
-| `/model [name]` | 切换模型：不带参数打开模型选择面板，带名称则直接切换；选择会保存为默认模型 |
-| `/lang [en\|zh]` | 切换界面语言：不带参数打开选择面板；立即生效并保存 |
-| `/status` | 查看模型、接口、上下文大小和累计用量 |
-| `/yes` | 开关自动批准 |
-| `/skills` | 列出可用的 skill |
-| `/<skill> [text]` | 直接使用某个 skill |
-| `/mcp` | 列出已连接的 MCP 服务器及其工具 |
-| `/pet` | 看看你的宠物 |
-| `/exit` | 退出 |
+| `/help` | Show help |
+| `/model [name]` | Switch the model; without a name, opens a picker |
+| `/mode [mode]` | Switch the permission mode; without a name, opens a picker |
+| `/clear` | Start a new conversation (the old one can still be resumed) |
+| `/compact [focus]` | Summarise the conversation to free up context |
+| `/resume [number]` | Resume an earlier session; without a number, opens a picker |
+| `/undo` | Revert the file changes of the last turn |
+| `/context [size]` | Show or set the context window, e.g. `/context 200k` |
+| `/permissions` | Show or remove this project's allow rules |
+| `/tasks` | List background commands |
+| `/status` | Show model, endpoint, mode and usage |
+| `/skills`, `/<skill> [request]` | List skills; use one directly |
+| `/mcp` | List connected MCP servers and their tools |
+| `/lang [en\|zh]` | Switch the interface language |
+| `/pet` | Meet your pet |
+| `/yes` | Toggle auto mode |
+| `/exit` | Quit |
 
-## 会话恢复
+## Permissions
 
-每轮对话结束后（包括被中断时），会话自动保存到 `~/.nori/sessions/`。
+By default Nori asks before it changes a file, runs a command, fetches a URL or calls an MCP tool. Reading and searching inside the workspace never asks.
+
+### Modes
+
+| Mode | File edits | Commands and other actions |
+| --- | --- | --- |
+| `default` | ask | ask |
+| `accept-edits` | allowed | ask |
+| `plan` | refused | ask |
+| `auto` | allowed | allowed |
+
+`Shift+Tab` steps through `default → accept-edits → plan`. `auto` is reached with `/mode auto`, `/yes`, `--mode auto` or `-y`; it is not in the Shift+Tab cycle so it cannot be switched on by accident. The current mode is shown in the footer and in the colour of the input box.
+
+### Plan mode
+
+In plan mode the agent can read, search and browse, but file edits are refused. When it understands the task it shows you a plan and asks:
+
+```
+ Plan ready
+ Carry out this plan?
+ ❯ 1. Yes, and accept file edits without asking
+   2. Yes, and ask before each edit
+   3. No, keep planning (esc)
+```
+
+Approving leaves plan mode and the agent starts implementing; declining keeps it planning, and you can tell it what to change. Start in plan mode with `nori --mode plan`, `/plan`, or Shift+Tab.
+
+### Allow rules
+
+Every approval dialog offers "don't ask again", which adds a rule for this project:
+
+| What you approved | Rule | Covers |
+| --- | --- | --- |
+| `git status --short` | `git status` | commands starting with `git status` |
+| `python -m pytest -q` | `python -m pytest` | that module, any arguments |
+| a file edit | `Update` / `Write` | every call of that tool |
+| fetching `https://docs.python.org/3/` | `docs.python.org` | that host |
+
+- A rule never matches a compound command (`;`, `&&`, `|`, redirection, `$(...)`), so `git status; rm -rf .` still asks.
+- No rule is offered for commands that are destructive or can run anything (`rm`, `sudo`, `curl`, `python -c`, ...). Those ask every time.
+- Rules are stored in `~/.nori/permissions.json`, keyed by project path — not in the project, so cloning a repository cannot grant itself permissions.
+- `/permissions` lists them; `/permissions remove <n>` and `/permissions clear` delete them.
+
+## Undo
+
+`/undo` restores the files changed in the most recent turn that changed any: edited files get their previous content back and files that turn created are deleted. Run it again to go back one more turn. The agent is told, so it does not assume its edits are still in place.
+
+Only changes made through the edit tools are tracked. What a shell command did (`rm`, `git checkout`, a code generator) cannot be undone this way, and checkpoints are kept in memory, so they are gone when you quit. For anything important, use git.
+
+## Context management
+
+A model can only see so much at once. Nori tracks how full the context is and compacts before it overflows.
+
+- **Window size** — tell Nori how big your model's window is: in `nori --setup`, with `/context 200k`, with `"context_window"` in the config file, or with `--context-window`. Sizes can be written as `128000`, `200k` or `1m`. The footer shows usage, e.g. `context 34k (27%)`.
+- **Automatic compaction** — at 80% of the window, the older part of the conversation is replaced by a summary written by the model, and the most recent part (up to 20k tokens, at most 20% of the window) is kept verbatim. This also happens in the middle of a long task, which then simply continues.
+- **Manual compaction** — `/compact`, optionally with what to keep: `/compact keep the migration progress`.
+- Compaction costs one extra model call, and a summary cannot keep every detail. Turn the automatic part off with `--no-auto-compact` or `"auto_compact": false`.
+- If the provider does not report token usage, sizes are estimated from the text and are approximate.
+
+## Sessions
+
+Each conversation is saved to `~/.nori/sessions/` after every turn, including interrupted ones.
 
 ```bash
-nori -c                    # 继续这个工作区最近的一次会话
-nori --list-sessions       # 查看保存的会话
-nori -r 20261112-0813      # 按 ID 恢复，写开头几位即可
-nori -c "接着把测试补完"    # 一次性执行时同样可用
+nori -c                   # continue the most recent session in this workspace
+nori --list-sessions      # list them
+nori -r 20261112-0813     # resume by ID; a prefix is enough
 ```
 
-- 在界面里输入 `/resume` 列出之前的会话，`/resume 2` 恢复第 2 个。恢复时会重放最近的对话记录。
-- 退出时会提示恢复本次会话的命令。
-- `/clear` 开始一个新会话，旧会话仍然保留，可以再恢复。
-- 恢复的是对话上下文，不是文件：期间你对代码的改动不会被撤销，模型看到的文件内容可能已经过时。
-- 会话文件是明文，包含模型读过的文件内容和命令输出。不想保存就加 `--no-save`；删除 `~/.nori/sessions/` 下的文件即可清理。
+In the UI, `/resume` opens a list to pick from. Resuming restores the conversation, not the files: what the model remembers about your code may be out of date. Session files are plain text and contain whatever the model read; use `--no-save` to keep nothing.
 
-## 子 agent
+## Models
 
-模型可以用 `spawn_agent` 工具把一件事交给子 agent。子 agent 从一份独立的上下文开始，做完只把最终报告交回，中间读过的文件、搜索结果不会占用主对话的上下文。
+`/model` opens a picker with the models from your config file plus the ones your endpoint lists. Type to filter, or type a name that is not in the list and press Enter to use it. The choice is saved as the default.
 
-| 类型 | 能做什么 | 适合 |
-| --- | --- | --- |
-| `explore` | 只能读文件和搜索 | 在大代码库里找东西、调研一个问题 |
-| `general` | 全部工具，可改文件、跑命令 | 相互独立的子任务 |
-
-- 一次回复里发起多个子 agent 时它们并行运行。
-- 界面上显示为 `Agent(任务描述)`，下方实时显示它正在调用的工具。
-- 子 agent 改文件、跑命令同样需要你确认，对话框里会附带 diff。
-- 子 agent 看不到主对话，也不能再派生子 agent；单个子 agent 最多 100 轮，且没有自动压缩。
-- 什么时候用由模型自己判断，你也可以直接说"用子 agent 去查一下……"。
-
-## 界面语言
-
-界面支持英文和中文，**默认英文**。切换方式（优先级从高到低）：
-
-- 启动参数：`nori --lang zh`
-- 环境变量：`NORI_LANG=zh`
-- 配置文件：`"language": "zh"`
-- 界面里输入 `/lang` 选择，或直接 `/lang zh`——立即生效并写入配置文件
-
-这只影响 Nori 自己的界面文字（菜单、提示、帮助）。模型用什么语言回答取决于你用什么语言提问。
-
-## 切换模型
-
-输入 `/model` 打开模型选择面板：
-
-```
-   Select a model
- ❯ ✓ deepseek-chat
-     claude-like-200k   200k context
-     glm-4-plus
-     qwen-max
-   ↑↓ select · enter confirm · esc cancel · type to filter
-```
-
-- 列表来自两处：配置文件里的 `models`，以及接口的模型列表（`GET /models`，接口不支持时自动忽略）。
-- 直接打字可以筛选；输入一个列表里没有的名字再按 `Enter`，就使用这个名字。
-- 也可以不开面板，直接 `/model <名称>`。
-- 选择会写入配置文件，成为下次启动的默认模型；用 `nori -m <名称>` 则只对这一次有效。
-- 切换模型不会清空对话，新模型接着当前上下文继续。
-
-不同模型的上下文窗口不一样时，可以在配置里分别指定，切换模型时窗口大小跟着变：
+Models with different context windows can be given their own, and the window follows the model when you switch:
 
 ```json
 {
-  "model": "deepseek-chat",
+  "model": "fast-model",
   "context_window": 128000,
-  "models": [
-    "deepseek-chat",
-    { "name": "claude-like-200k", "context_window": 200000 }
-  ]
+  "models": ["fast-model", { "name": "big-model", "context_window": 200000 }]
 }
 ```
 
-没有单独指定窗口的模型使用顶层的 `context_window`。`/resume` 和 `/lang` 不带参数时同样会打开选择面板。
+## Sub-agents
 
-## 上下文管理
+The agent can hand a task to a sub-agent, which works in a separate context and returns only its final report. That keeps long searches out of the main conversation.
 
-模型一次能看到的内容有上限（上下文窗口）。长任务里读过的文件、命令输出会不断累积，Nori 用压缩来避免撞上这个上限：
+| Type | Can do | Good for |
+| --- | --- | --- |
+| `explore` | read, search, browse | finding things in a large codebase, research |
+| `general` | everything | independent subtasks |
 
-- **窗口大小**：告诉 Nori 你的模型窗口有多大，有四种方式，数值可以写成 `128000`、`200k`、`1m`：
-  - `nori --setup` 向导里填写；
-  - 界面里输入 `/context 200k`（立即生效并写入配置文件），不带参数则查看当前值和占用；
-  - 配置文件里写 `"context_window": 200000`；
-  - 启动时加 `--context-window 200k`（只对这一次有效）。
+Several sub-agents started in one reply run in parallel. Their actions go through the same approvals, they compact their own context, and they cannot start sub-agents themselves.
 
-  底栏实时显示当前占用，如 `上下文 34k (27%)`，达到 80% 时变色。
-- **自动压缩**：占用达到窗口的 80% 时，Nori 让模型把较早的对话写成摘要并替换掉原文，最近的一部分（最多 20k token，不超过窗口的 20%）原样保留。任务进行到一半也会触发，压缩完接着干，不需要你介入。
-- **手动压缩**：`/compact` 立即把整个对话压成摘要；可以附带说明，例如 `/compact 重点保留数据库迁移的进度`。
-- **摘要的内容**：目标与约束、已完成的工作（文件、命令及结果）、关键发现、剩余工作和下一步。
-- 压缩会多花一次模型调用；摘要不可能保留全部细节，压缩后模型可能需要重新读某些文件。用 `--no-auto-compact` 或 `"auto_compact": false` 可以关掉自动压缩。
-- 占用量优先取服务端返回的 token 用量；服务端不返回用量时按字符数估算，数字只是近似值。
+## Web access, images and shell
 
-## 宠物
+- **Web** — `web_search` returns titles, links and snippets; `web_fetch` reads a page as text. Fetching asks first, with "don't ask again for this host". Search scrapes a public search page (DuckDuckGo by default, Bing as a fallback), so it can break when those pages change.
+- **Images** — mention an image in your message (`@screenshot.png`, a path, or a file dragged into the terminal) and it is sent along. `Ctrl-V` pastes an image from the clipboard. PNG, JPEG, GIF and WebP up to 5 MB; the model must support image input.
+- **`!command`** — runs the command directly, shows the output, and adds both to the conversation so the agent can see them. Nothing is asked, since you typed it.
+- **Background commands** — the agent can start a long-running command (a dev server, a watcher) in the background, read its output later and stop it. The footer shows how many are running, `/tasks` lists them, and they are stopped when you quit.
 
-Nori 住在输入框右边，表情跟着 agent 的状态走：
+## Skills
 
-| 状态 | 样子 |
-| --- | --- |
-| 空闲 | `( o.o )`，偶尔眨眼 |
-| 思考 | `( o.O )` 加一个问号 |
-| 执行工具 | `( >.< )` 爪子在动 |
-| 等你确认 | `( o.o )` 加一个感叹号 |
-| 任务完成 | `( ^.^ )` ♪ |
-| 出错或被中断 | `( x.x )` |
-| 你很久没动 | `( -.- )` zZ |
-
-- 每完成一个任务得 10 点经验，每次工具调用得 1 点，攒够了会升级（小奶猫 → 见习喵 → 码农喵 → …）。
-- `/pet` 查看等级和战绩，`/pet name 小黑` 改名，`/pet hide` / `/pet show` 隐藏或显示。
-- 状态保存在 `~/.nori/pet.json`。终端宽度不足 64 列时自动隐藏。
-
-## Skill
-
-一个 skill 是一个包含 `SKILL.md` 的目录，文件开头用 front matter 写名称和描述，正文是给 agent 的指引，目录里可以放脚本、模板等辅助文件：
-
-```
-.agents/skills/
-  review/
-    SKILL.md
-    checklist.md
-```
+A skill is a directory with a `SKILL.md`: front matter with a name and description, then instructions. It can carry scripts and templates.
 
 ```markdown
 ---
 name: review
-description: 按团队清单做代码审查。当用户要求 review 代码时使用。
+description: Review code against the team checklist. Use when asked to review code.
 ---
-1. 先读 checklist.md（与本文件同目录）
-2. 逐项检查改动并给出结论
+1. Read checklist.md (next to this file)
+2. Check the changes item by item and report
 ```
 
-工作方式：
+Only names and descriptions go into the system prompt; the agent loads the full text when a task matches. You can also invoke one yourself: `/review focus on auth.py`.
 
-- 启动时只把各 skill 的名称和描述放进系统提示；任务匹配时 agent 调用 `load_skill` 读取正文，再按其中指引执行。
-- 也可以手动触发：`/review 重点看 auth.py`。
-- skill 目录对 agent 只读，即使它在工作区之外。
-
-查找位置（同名时靠前的优先）：
-
-1. `<工作区>/.agents/skills/`
-2. `<工作区>/.claude/skills/`
-3. `~/.nori/skills/`
-4. `~/.agents/skills/`
-5. `~/.claude/skills/`
+Searched, first match wins: `<workspace>/.agents/skills/`, `<workspace>/.claude/skills/`, `~/.nori/skills/`, `~/.agents/skills/`, `~/.claude/skills/`.
 
 ## MCP
 
-在 `<工作区>/.mcp.json`（项目级）或 `~/.nori/mcp.json`（用户级）中配置，格式与其他 coding agent 通用的 `mcpServers` 一致；同名时项目级覆盖用户级：
+Configure servers in `<workspace>/.mcp.json` (project) or `~/.nori/mcp.json` (user), in the usual `mcpServers` format:
 
 ```json
 {
@@ -343,85 +328,72 @@ description: 按团队清单做代码审查。当用户要求 review 代码时�
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
       "env": { "API_KEY": "${MY_API_KEY}" }
     },
-    "remote": {
-      "type": "http",
-      "url": "https://example.com/mcp",
-      "headers": { "Authorization": "Bearer ${TOKEN}" }
-    }
+    "remote": { "type": "http", "url": "https://example.com/mcp" }
   }
 }
 ```
 
-- 有 `command` 的是 stdio 服务器（可选 `args`、`env`、`cwd`）；有 `url` 的是远程服务器，`"type": "sse"` 用 SSE，否则用 Streamable HTTP。
-- 字符串里的 `${VAR}` 和 `${VAR:-默认值}` 会用环境变量展开，密钥不必写进文件。
-- 可选字段：`"timeout"`（秒，默认 30）、`"disabled": true`。
-- 连接失败的服务器会被报告并跳过，不影响其他功能。
-- MCP 工具和写文件、执行命令一样，调用前需要确认。
-- 项目级 `.mcp.json` 会启动任意命令，所以首次启动时会先询问是否信任（`-y` 时跳过询问）。
+An entry with `command` is a stdio server; one with `url` uses Streamable HTTP, or SSE with `"type": "sse"`. `${VAR}` is expanded from the environment. A project's `.mcp.json` can start arbitrary commands, so Nori asks whether you trust it before starting those servers.
 
-## 环境变量
+## Language
 
-| 变量 | 说明 |
-| --- | --- |
-| `NORI_CONFIG` | 配置文件路径 |
-| `NORI_MODEL` | 模型名，覆盖配置文件 |
-| `NORI_API` | `responses` 或 `chat`，覆盖配置文件 |
-| `NORI_LANG` | 界面语言 `en` 或 `zh`，覆盖配置文件 |
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | 配置文件里没有对应项时使用 |
-| `NORI_TRACING` | 设为 `1` 时开启 SDK 的 tracing（会把运行数据上传到 OpenAI，默认关闭） |
+The interface is in English by default and can be switched to Chinese: `nori --lang zh`, `NORI_LANG=zh`, `"language": "zh"`, or `/lang` in the UI. This only affects Nori's own text; the model answers in the language you write in.
 
-## 安全说明
+## The pet
 
-- 文件工具只能访问工作区内的路径，但 `run_shell` 执行的是任意 shell 命令，不受此限制——这正是它默认需要确认的原因。
-- `-y` 会跳过所有确认（包括是否启动项目 `.mcp.json` 里的服务器），只建议在可信项目或沙箱环境里使用。
-- skill 的内容会进入模型上下文并影响它的行为，只使用你信任的 skill。
-- 配置文件里的 API Key 是明文保存的（权限 600）。不想落盘可以写 `"api_key": "${MY_KEY}"`。
+Nori sits next to the input box and reacts to what is going on: thinking `( o.O )`, working `( >.< )`, waiting for your approval with a `!`, pleased `( ^.^ )` when a task is done, `( x.x )` on an error, and asleep when you have been away. Every finished task earns experience. `/pet` shows its level, `/pet name Mochi` renames it, `/pet hide` hides it.
 
-## 打包成可执行程序
+## Reliability
+
+- Model requests that fail with a rate limit, an overloaded server or a network error are retried with exponential backoff (`retries`, default 4).
+- When a task hits the turn limit or is interrupted, the work done so far stays in context.
+- A failed summary never fails the task: it continues with the full context.
+
+## Security notes
+
+- File tools are confined to the workspace. `run_shell` is not — it runs arbitrary commands, which is why it asks.
+- `auto` mode and `-y` skip every confirmation, including whether to start a project's MCP servers. Use them only in projects and environments you trust.
+- Skills and fetched web pages are text the model reads and may act on. Use skills you trust and stay in a mode that asks when browsing unknown sites.
+- The API key in the config file is stored in plain text (file mode 600). Write `"api_key": "${MY_KEY}"` to keep it out of the file.
+
+## Building executables
 
 ```bash
 pip install -e ".[build]"
-python scripts/build.py            # 单文件：dist/nori（Windows 上是 dist/nori.exe）
-python scripts/build.py --onedir   # 文件夹：dist/nori/，启动更快
+python scripts/build.py                          # one file: dist/nori
+python scripts/build.py --archive nori-linux-x86_64   # folder build, packed as dist/<name>.tar.gz
 ```
 
-- 产物不依赖 Python，拷到 `PATH` 里的任意目录就能用（例如 `/usr/local/bin/nori`）。
-- PyInstaller 不能交叉编译：在哪个系统和 CPU 上构建，产物就只能在那上面运行。
-- 单文件版每次启动要先解压，会慢几秒；介意的话用 `--onedir`。
-- `.github/workflows/release.yml` 为 Linux、macOS、Windows 各构建一份并发布到 GitHub Release。两种触发方式：推送 `v*` 标签；或在 Actions 页面手动运行并填写标签名（标签会自动创建在所选提交上）。手动运行时不填标签则只构建不发布。标签带 `-` 的标记为预发布。
+PyInstaller cannot cross-compile, so each platform is built on that platform. The release workflow (`.github/workflows/release.yml`) does this for Linux, macOS and Windows, publishes a GitHub Release, updates the Homebrew formula and then installs it with Homebrew as a check. Trigger it by pushing a `v*` tag, or run it manually with a tag name.
 
-如果只是想全局安装而不需要脱离 Python，可以用 `pipx install .` 或 `uv tool install .`。
-
-## 项目结构
-
-```
-src/nori/
-  cli.py         # 入口：参数解析，选择 TUI / 简单模式 / 一次性执行
-  tui.py         # 终端界面（prompt_toolkit）
-  pet.py         # 宠物的表情、台词和成长
-  render.py      # 工具调用、结果、Markdown 的显示格式
-  session.py     # 对话与运行循环、审批流程、中断处理
-  compact.py     # 会话压缩：切分位置、摘要生成
-  store.py       # 会话存盘与恢复
-  commands.py    # 斜杠命令与选择面板的数据
-  i18n.py        # 界面语言：英文为键，附中文词条表
-  config.py      # 配置文件与设置向导
-  branding.py    # 应用名、主题色、用户目录
-  tools.py       # 工具实现与审批策略
-  skills.py      # skill 的发现与解析
-  mcp_config.py  # MCP 配置加载与服务器构建
-  agent.py       # 系统提示与 Agent 构建
-scripts/
-  build.py       # 用 PyInstaller 打包
-  entry.py       # 可执行程序的入口
-tests/           # 用 SDK 的 ScriptedModel 驱动真实运行循环；TUI 用管道输入做无头测试
-```
-
-想换个名字？改 `src/nori/branding.py` 里的常量、`pyproject.toml` 里的包名和命令名即可。
-
-## 开发
+## Development
 
 ```bash
 pip install -e ".[dev]"
 pytest
 ```
+
+```
+src/nori/
+  cli.py          argument parsing; kept light so --help and --version are instant
+  app.py          wires everything together and starts the chosen front end
+  tui.py          the terminal UI (prompt_toolkit)
+  session.py      the conversation: run loop, approvals, compaction guard, sub-agents
+  permissions.py  modes and allow rules
+  tools.py        the agent's tools
+  commands.py     slash commands and pickers
+  compact.py      summarising history
+  checkpoints.py  file snapshots for /undo
+  shelltasks.py   background commands
+  web.py          fetching pages and searching
+  attachments.py  images
+  store.py        saved sessions
+  config.py       config file and setup wizard
+  i18n.py         interface language: English keys, Chinese catalog
+  render.py       how tool calls, results and Markdown are shown
+  pet.py          the pet
+  skills.py, mcp_config.py, agent.py, branding.py, util.py
+tests/            the real SDK run loop driven by a scripted model; the UI is tested headlessly
+```
+
+To rebrand, change `src/nori/branding.py` and the names in `pyproject.toml`.

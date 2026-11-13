@@ -47,6 +47,11 @@ from .store import TITLE_CHARS, SessionRecord, SessionStore, new_session_id
 from .tools import AgentContext
 
 INTERRUPT_NOTE = "[Request interrupted by user]"
+MAX_TURNS_REACHED = "Reached the maximum of {limit} turns for one task; it is not finished."
+MAX_TURNS_HINT = (
+    'The finished steps are kept in context: say "continue" to carry on. '
+    "Raise the limit with --max-turns or max_turns in the config file."
+)
 COMPACTED = "Compacted context: about {before} → {after} tokens"
 COMPACTION_FAILED = "Compacting the context failed; continuing with the full context."
 SUBAGENT_MAX_TURNS = 100

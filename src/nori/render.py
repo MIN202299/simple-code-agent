@@ -39,6 +39,10 @@ TOOL_TITLES = {
     "run_shell": ("Bash", "command"),
     "load_skill": ("Skill", "name"),
     "spawn_agent": ("Agent", "description"),
+    "web_fetch": ("Fetch", "url"),
+    "web_search": ("Search", "query"),
+    "shell_output": ("Output", "task_id"),
+    "shell_kill": ("Stop", "task_id"),
 }
 PLAN_TITLE = "Update Todos"
 
@@ -73,6 +77,8 @@ def tool_label(name: str) -> str:
     """Short human name of a tool, e.g. `Bash` for `run_shell`."""
     if name == "update_plan":
         return PLAN_TITLE
+    if name == "present_plan":
+        return "Plan"
     return TOOL_TITLES.get(name, (name, ""))[0]
 
 
@@ -80,6 +86,8 @@ def call_title(name: str, args: dict[str, Any]) -> str:
     """One-line summary of a tool call, e.g. `Read(src/a.py)` or `Bash(pytest -q)`."""
     if name == "update_plan":
         return PLAN_TITLE
+    if name == "present_plan":
+        return "Plan"
     if name in TOOL_TITLES:
         title, key = TOOL_TITLES[name]
         value = args.get(key)

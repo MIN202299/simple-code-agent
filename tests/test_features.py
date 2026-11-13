@@ -568,7 +568,8 @@ def test_tui_rule_option_shift_tab_and_shell_mode(tmp_path):
 
         h.send("!echo from-user")
         await h.until(lambda: tui.input.text == "!echo from-user")
-        assert tui._line_prefix(0, 0)[0][1] == "! " and tui._rule_style() == "class:rule.shell"
+        assert tui._line_prefix(0, 0)[0][0] == "class:prompt.shell"
+        assert tui._rule_style() == "class:rule.shell"
         h.send("\r")
         await h.until(lambda: "from-user\n" in h.text + "\n" and "exit code: 0" in h.text)
         await h.idle()

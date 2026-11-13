@@ -15,7 +15,7 @@ from agents.testing import ScriptedModel, assistant_message, function_call
 from rich.console import Console
 
 from nori.agent import build_instructions
-from nori.cli import connect_mcp, select_mcp_specs
+from nori.app import connect_mcp, select_mcp_specs
 from nori.commands import match_commands, run_command, skill_message
 from nori.mcp_config import MCPConfigError, build_server, load_mcp_specs
 from nori.session import PlainUI, Session

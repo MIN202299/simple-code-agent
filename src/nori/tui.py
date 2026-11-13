@@ -71,7 +71,14 @@ from .render import (
     split_blocks,
     tool_label,
 )
-from .session import COMPACTED, COMPACTION_FAILED, RETRYING, Session
+from .session import (
+    COMPACTED,
+    COMPACTION_FAILED,
+    MAX_TURNS_HINT,
+    MAX_TURNS_REACHED,
+    RETRYING,
+    Session,
+)
 from .tools import SKIP_DIRS
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"  # running tool calls
@@ -644,7 +651,7 @@ class Tui:
     def _line_prefix(self, line_number: int, wrap_count: int) -> StyleAndTextTuples:
         first = line_number == 0 and wrap_count == 0
         if self.input.text.startswith("!"):
-            return [("class:prompt.shell", "! " if first else "  ")]
+            return [("class:prompt.shell", "❯ " if first else "  ")]
         return [("class:prompt", "❯ " if first else "  ")]
 
     def _rule_style(self) -> str:

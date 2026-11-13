@@ -12,7 +12,8 @@ from typing import Any
 
 from agents import Agent, Model, Runner
 
-DEFAULT_CONTEXT_WINDOW = 128_000
+from .util import DEFAULT_CONTEXT_WINDOW as DEFAULT_CONTEXT_WINDOW  # re-exported
+
 COMPACT_AT = 0.8  # auto-compact when the context reaches this share of the window
 KEEP_RECENT_SHARE = 0.2  # share of the window kept verbatim after auto-compaction
 KEEP_RECENT_MAX = 20_000

@@ -4,6 +4,9 @@ name: Release
 #   - push a v* tag, or
 #   - run manually with a tag name (the tag is created on the selected commit).
 # A manual run without a tag only builds and uploads workflow artifacts.
+#
+# Each platform gets two downloads: a single executable, and an archive of the
+# folder build, which starts faster and is what the Homebrew formula installs.
 on:
   push:
     tags: ["v*"]
@@ -20,11 +23,14 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
       - run: pip install -e ".[dev]"
       - run: pytest -q
 
@@ -35,14 +41,17 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            asset: nori-linux-x86_64
+            name: nori-linux-x86_64
             binary: nori
+            archive: tar.gz
           - os: macos-latest
-            asset: nori-macos-arm64
+            name: nori-macos-arm64
             binary: nori
+            archive: tar.gz
           - os: windows-latest
-            asset: nori-windows-x86_64.exe
+            name: nori-windows-x86_64
             binary: nori.exe
+            archive: zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -51,15 +60,21 @@ jobs:
           python-version: "3.12"
       - name: Install
         run: pip install -e ".[build]"
-      - name: Build
-        run: python scripts/build.py
-      - name: Rename
+      - name: Build the folder archive
+        run: python scripts/build.py --archive ${{ matrix.name }}
+      - name: Build the single executable
         shell: bash
-        run: mv "dist/${{ matrix.binary }}" "dist/${{ matrix.asset }}"
+        run: |
+          python scripts/build.py
+          suffix=""
+          if [ "${{ matrix.binary }}" = "nori.exe" ]; then suffix=".exe"; fi
+          mkdir -p out
+          mv "dist/${{ matrix.binary }}" "out/${{ matrix.name }}${suffix}"
+          mv "dist/${{ matrix.name }}.${{ matrix.archive }}" out/
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: dist/${{ matrix.asset }}
+          name: ${{ matrix.name }}
+          path: out/*
 
   publish:
     needs: build
@@ -68,6 +83,9 @@ jobs:
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -80,3 +98,25 @@ jobs:
           files: dist/*
           prerelease: ${{ contains(env.TAG, '-') }}
           generate_release_notes: true
+      - name: Update the Homebrew formula
+        run: |
+          macos=$(sha256sum dist/nori-macos-arm64.tar.gz | cut -d' ' -f1)
+          linux=$(sha256sum dist/nori-linux-x86_64.tar.gz | cut -d' ' -f1)
+          python3 scripts/update_formula.py "$TAG" "$macos" "$linux"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/nori.rb
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Update the Homebrew formula for $TAG"
+          git push origin "HEAD:${{ github.event.repository.default_branch }}"
+
+  brew:
+    # Installs the freshly published formula the way a user would.
+    needs: publish
+    runs-on: macos-latest
+    steps:
+      - name: Install with Homebrew
+        run: |
+          brew tap min202299/nori "https://github.com/${{ github.repository }}"
+          brew install min202299/nori/nori
+          nori --version

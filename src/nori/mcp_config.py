@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,10 +23,10 @@ from agents import RunContextWrapper
 from agents.mcp import MCPServer, MCPServerSse, MCPServerStdio, MCPServerStreamableHttp
 
 from .branding import app_dir
+from .util import expand_env
 
 PROJECT_CONFIG = ".mcp.json"
 DEFAULT_TIMEOUT_SECONDS = 30.0
-_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
 class MCPConfigError(Exception):
@@ -54,17 +53,6 @@ class MCPServerSpec:
 
 def user_config_path(home: Path | None = None) -> Path:
     return app_dir(home) / "mcp.json"
-
-
-def expand_env(value: Any) -> Any:
-    """Expand `${VAR}` and `${VAR:-default}` in strings, recursively."""
-    if isinstance(value, str):
-        return _VAR_RE.sub(lambda m: os.environ.get(m.group(1), m.group(2) or ""), value)
-    if isinstance(value, list):
-        return [expand_env(v) for v in value]
-    if isinstance(value, dict):
-        return {k: expand_env(v) for k, v in value.items()}
-    return value
 
 
 def _read(path: Path, source: str) -> list[MCPServerSpec]:

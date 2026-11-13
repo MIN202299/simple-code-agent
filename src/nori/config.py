@@ -28,9 +28,8 @@ from typing import Any
 from rich.console import Console
 
 from .branding import APP_NAME, app_dir
-from .compact import DEFAULT_CONTEXT_WINDOW
 from .i18n import DEFAULT_LANGUAGE, normalize_language, t
-from .mcp_config import expand_env
+from .util import DEFAULT_CONTEXT_WINDOW, expand_env
 from .permissions import MODES
 from .web import SEARCH_ENGINES
 
