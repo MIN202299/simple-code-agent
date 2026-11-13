@@ -386,7 +386,10 @@ def test_file_mention_anywhere_in_the_text(tmp_path):
         buffer.cursor_position = 1
         await h.until(lambda: bool(tui._menu()))
         assert labels(tui) == ["@README.md", "@src/calc.py", "@docs/calc-notes.md"]  # shallow, short first
-        h.send(".")
+        h.send(".")  # a leading dot asks for hidden files; they come first
+        await h.until(lambda: labels(tui)[:1] == ["@.env"])
+        assert "@.DS_Store" not in labels(tui)
+        h.send("e")
         await h.until(lambda: labels(tui) == ["@.env"])
 
         # letters in order are enough
