@@ -137,10 +137,11 @@ STYLE = Style.from_dict(
         "footer.plan": "fg:ansicyan bold",
         "footer.notice": "fg:ansiyellow",
         "queued": "fg:ansibrightblack italic",
-        "menu": "fg:ansibrightblack",
-        "menu.selected": f"fg:{ACCENT} bold",
-        "menu.title": "bold",
-        "menu.current": "fg:ansigreen",
+        # Not named "menu": prompt_toolkit styles that class with a grey background.
+        "palette": "fg:ansibrightblack",
+        "palette.selected": f"fg:{ACCENT} bold",
+        "palette.title": "bold",
+        "palette.current": "fg:ansigreen",
         "help.key": "bold",
         "approval.title": "fg:ansiyellow bold",
         "approval.selected": f"fg:{ACCENT} bold",
@@ -154,7 +155,12 @@ MODE_LABELS = {
     "auto": "auto mode on",
     "bypass": "bypass permissions on",
 }
-_FILE_TOKEN = re.compile(r"(?:^|\s)@(\S*)$")
+# An `@` being typed, anywhere in the text: after a space, after CJK text or
+# punctuation, or at the start. Not after an ASCII word character, which is an
+# e-mail address or a handle rather than a file mention.
+_FILE_TOKEN = re.compile(r"(?<![A-Za-z0-9_.\-])@([^\s@]*)$")
+# Files that are never worth offering.
+_NOISE_FILES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 
 
 @dataclass(frozen=True)
@@ -179,6 +185,10 @@ class _Placeholder(Processor):
         if ti.lineno == 0 and not ti.document.text:
             return Transformation([*ti.fragments, ("class:placeholder", self.text())])
         return Transformation(ti.fragments)
+
+
+def name_of(path: str) -> str:
+    return path.rsplit("/", 1)[-1]
 
 
 def git_branch(workspace: Path) -> str:
@@ -298,6 +308,8 @@ class Tui:
             dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
             relative = os.path.relpath(directory, workspace)
             for name in sorted(filenames):
+                if name in _NOISE_FILES:
+                    continue
                 files.append(name if relative == "." else f"{relative}/{name}".replace(os.sep, "/"))
             if len(files) >= MAX_INDEXED_FILES:
                 break
@@ -305,15 +317,28 @@ class Tui:
         return files
 
     def _match_files(self, query: str) -> list[MenuItem]:
-        query = query.lower()
+        """Files matching what was typed after `@`, best first.
+
+        A match on the file name beats one on the directory, which beats the
+        letters merely appearing in order. Hidden files are offered only once
+        the query starts with a dot, so they do not crowd out the empty list.
+        """
+        show_hidden = query.startswith(".")
         scored = []
         for path in self._file_index():
-            lowered = path.lower()
-            if query not in lowered:
+            directory, _, name = path.rpartition("/")
+            if name.startswith(".") and not show_hidden:
                 continue
-            name = lowered.rsplit("/", 1)[-1]
-            scored.append((not name.startswith(query), query not in name, len(path), path))
-        return [MenuItem(f"@{path}", "") for *_rank, path in sorted(scored)[:MAX_FILE_MATCHES]]
+            name_rank = fuzzy_rank(query, name)
+            path_rank = fuzzy_rank(query, path)
+            if name_rank is None and path_rank is None:
+                continue
+            rank = name_rank if name_rank is not None else 3 + (path_rank or 0)
+            scored.append((rank, path.count("/"), len(path), path, directory))
+        return [
+            MenuItem(f"@{path}", f"{directory}/" if directory else "", command=name_of(path))
+            for _rank, _depth, _length, path, directory in sorted(scored)[:MAX_FILE_MATCHES]
+        ]
 
     def _menu_state(self) -> tuple[str, list[MenuItem]]:
         """The open completion menu: its kind ("command", "file" or "") and items."""
@@ -821,7 +846,7 @@ class Tui:
         out: StyleAndTextTuples = []
         if picker is not None:
             title = t("Loading…") if picker["loading"] else picker["title"]
-            out.append(("class:menu.title", f"   {title}\n"))
+            out.append(("class:palette.title", f"   {title}\n"))
             if not items and not picker["loading"]:
                 custom = picker["name"] == "model" and self.input.text.strip()
                 note = t("No match — press Enter to use this name") if custom else t("No match")
@@ -829,22 +854,27 @@ class Tui:
         index = min(self._menu_index, len(items) - 1)
         start = max(0, min(index - MENU_ROWS + 1, len(items) - MENU_ROWS))
         columns = self._columns()
-        width = min(max((cell_len(f"{i.label} {i.hint}") for i in items), default=0) + 2, 44)
+        widest = max(
+            (cell_len(f"@{i.command}" if kind == "file" else f"{i.label} {i.hint}") for i in items),
+            default=0,
+        )
+        width = min(widest + 2, 44)
         for position, item in enumerate(items[start : start + MENU_ROWS], start):
             selected = position == index
-            style = "class:menu.selected" if selected else ""
+            style = "class:palette.selected" if selected else ""
             mark = "✓" if item.current else " "
-            label = item.label if cell_len(item.label) < width else item.label[: width - 2] + "…"
+            shown = f"@{item.command}" if kind == "file" else item.label  # files: name only
+            label = shown if cell_len(shown) < width else shown[: width - 2] + "…"
             padding = " " * max(width - cell_len(f"{label} {item.hint}".rstrip()), 1)
             room = max(columns - width - 8 - cell_len(item.tag), 10)
             description = item.description.splitlines()[0] if item.description else ""
             if cell_len(description) > room:
                 description = description[: max(room // 2, 8)] + "…"
             out.append((style, f" {'❯' if selected else ' '} "))
-            out.append(("class:menu.current", mark) if item.current else ("", mark))
+            out.append(("class:palette.current", mark) if item.current else ("", mark))
             out.append((style, f" {label}"))
             out.append(("class:dim", f" {item.hint}" if item.hint else ""))
-            out.append(("class:menu.selected" if selected else "class:menu", f"{padding}{description}"))
+            out.append(("class:palette.selected" if selected else "class:palette", f"{padding}{description}"))
             out.append(("class:dim", f"  {item.tag}\n" if item.tag else "\n"))
         position = f"{index + 1}/{len(items)} · " if len(items) > MENU_ROWS else ""
         if kind == "picker" or picker is not None:

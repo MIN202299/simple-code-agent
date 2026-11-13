@@ -165,7 +165,7 @@ The UI is drawn inline, not on the alternate screen: the transcript goes into yo
 | `Esc` | Interrupt the running task; close a menu |
 | `Shift+Tab` | Switch permission mode |
 | `/` | Command panel: fuzzy matching, `Tab` completes, `Enter` runs |
-| `@` | File menu: fuzzy path matching |
+| `@` | File menu, anywhere in the text: fuzzy matching on name and path |
 | `!` | Run a shell command yourself |
 | `Ctrl-V` | Paste an image from the clipboard |
 | `?` | Show shortcuts (when the input is empty) |

@@ -339,3 +339,69 @@ def test_sub_agent_progress_and_nested_approval(tmp_path):
     h = run_tui(tmp_path, steps, scenario)
     assert (tmp_path / "a.txt").read_text() == "hello"
     assert "● Agent(write it)\n  ⎿  REPORT: wrote a.txt" in h.text and "done" in h.text
+
+
+def test_file_mention_anywhere_in_the_text(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "calc.py").write_text("x = 1\n")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "calc-notes.md").write_text("n\n")
+    (tmp_path / "README.md").write_text("hi\n")
+    (tmp_path / ".env").write_text("SECRET=1\n")
+    (tmp_path / ".DS_Store").write_text("")
+
+    def labels(tui):
+        return [item.label for item in tui._menu()]
+
+    async def scenario(h: Harness):
+        tui = h.tui
+        buffer = tui.input.buffer
+
+        # right after Chinese text, with no space before the @
+        h.send("请看一下@cal")
+        await h.until(lambda: labels(tui) == ["@src/calc.py", "@docs/calc-notes.md"])
+        panel = "".join(text for _style, text in tui._menu_text())
+        assert "@calc.py" in panel and "src/" in panel  # file name, with its directory beside it
+        h.send(ENTER)
+        await h.until(lambda: tui.input.text == "请看一下@src/calc.py ")
+
+        # in the middle of existing text: what follows the cursor is kept
+        buffer.text = "对比和这个文件"
+        buffer.cursor_position = 2
+        h.send("@read")
+        await h.until(lambda: labels(tui) == ["@README.md"])
+        h.send(TAB)
+        await h.until(lambda: tui.input.text == "对比@README.md 和这个文件")
+        assert buffer.cursor_position == len("对比@README.md ")
+
+        # an e-mail address or a handle is not a file mention
+        for text in ("mail me at bob@cal", "version-1@cal", "a.b@cal"):
+            buffer.text = text
+            buffer.cursor_position = len(text)
+            await asyncio.sleep(0.02)
+            assert tui._menu() == [], text
+
+        # hidden files appear only when asked for, and junk files never
+        buffer.text = "@"
+        buffer.cursor_position = 1
+        await h.until(lambda: bool(tui._menu()))
+        assert labels(tui) == ["@README.md", "@src/calc.py", "@docs/calc-notes.md"]  # shallow, short first
+        h.send(".")
+        await h.until(lambda: labels(tui) == ["@.env"])
+
+        # letters in order are enough
+        buffer.text = "@clcpy"
+        buffer.cursor_position = 6
+        await h.until(lambda: labels(tui) == ["@src/calc.py"])
+        buffer.reset()
+
+    run_tui(tmp_path, [], scenario)
+
+
+def test_menu_styles_do_not_collide_with_prompt_toolkit_defaults():
+    from nori.tui import STYLE
+
+    # prompt_toolkit gives the class "menu" a grey background, which used to leak in
+    names = {name for name, _style in STYLE.style_rules}
+    assert not any(name == "menu" or name.startswith("menu.") for name in names)
+    assert {"palette", "palette.selected"} <= names
