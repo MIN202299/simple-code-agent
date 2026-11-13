@@ -50,6 +50,9 @@ def _text_of(content: Any) -> str:
         parts = []
         for part in content:
             if isinstance(part, dict):
+                if part.get("type") == "input_image":
+                    parts.append("[image]")
+                    continue
                 parts.append(str(part.get("text") or part.get("refusal") or ""))
             else:
                 parts.append(str(getattr(part, "text", "") or ""))
@@ -61,9 +64,23 @@ def _get(item: Any, key: str) -> Any:
     return item.get(key) if isinstance(item, dict) else getattr(item, key, None)
 
 
+IMAGE_TOKENS = 1_500  # rough cost of one attached image
+
+
+def _without_image_data(value: Any) -> Any:
+    """Replace inline image data, which is huge as text but cheap as tokens."""
+    if isinstance(value, dict):
+        if value.get("type") == "input_image":
+            return {"type": "input_image", "image_url": "x" * IMAGE_TOKENS * 4}
+        return {key: _without_image_data(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_without_image_data(item) for item in value]
+    return value
+
+
 def estimate_tokens(items: list[Any]) -> int:
     """Rough token count: ~4 ASCII characters or ~1 non-ASCII character per token."""
-    text = json.dumps(items, ensure_ascii=False, default=str)
+    text = json.dumps(_without_image_data(items), ensure_ascii=False, default=str)
     wide = sum(1 for ch in text if ord(ch) > 0x2E7F)
     return (len(text) - wide) // 4 + wide
 

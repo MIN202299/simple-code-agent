@@ -43,6 +43,7 @@ from rich.text import Text
 
 from . import __version__
 from . import pet as petlib
+from .attachments import clipboard_image
 from .branding import ACCENT, APP_NAME, COMMAND, TAGLINE, app_dir, short_path
 from .commands import (
     extensions_summary,
@@ -53,6 +54,7 @@ from .commands import (
 )
 from .compact import COMPACT_AT
 from .i18n import t
+from .permissions import describe_rule
 from .pet import Pet
 from .render import (
     call_preview,
@@ -94,9 +96,11 @@ SHORTCUTS = [
     ("alt+enter", "new line"),
     ("esc", "interrupt the task"),
     ("/", "commands"),
-    ("@", "mention a file"),
+    ("@", "mention a file or image"),
+    ("!", "run a shell command"),
+    ("ctrl+v", "paste an image"),
     ("↑ ↓", "input history"),
-    ("shift+tab", "toggle auto-approve"),
+    ("shift+tab", "switch mode"),
     ("ctrl+l", "clear the screen"),
     ("ctrl+c", "interrupt / clear / quit"),
     ("ctrl+d", "quit"),
@@ -106,6 +110,10 @@ STYLE = Style.from_dict(
     {
         "rule": "fg:ansibrightblack",
         "rule.auto": "fg:ansimagenta",
+        "rule.accept-edits": "fg:ansiblue",
+        "rule.plan": "fg:ansicyan",
+        "rule.shell": "fg:ansiyellow",
+        "prompt.shell": "fg:ansiyellow bold",
         "prompt": f"fg:{ACCENT} bold",
         "placeholder": "fg:ansibrightblack",
         "pet": f"fg:{ACCENT}",
@@ -116,6 +124,8 @@ STYLE = Style.from_dict(
         "dim": "fg:ansibrightblack",
         "footer": "fg:ansibrightblack",
         "footer.auto": "fg:ansimagenta bold",
+        "footer.accept-edits": "fg:ansiblue bold",
+        "footer.plan": "fg:ansicyan bold",
         "footer.notice": "fg:ansiyellow",
         "queued": "fg:ansibrightblack italic",
         "menu": "fg:ansibrightblack",
@@ -128,7 +138,12 @@ STYLE = Style.from_dict(
     }
 )
 
-APPROVAL_CHOICES = ("yes", "always", "no")
+# Footer labels of the non-default permission modes (English keys, translated on display).
+MODE_LABELS = {
+    "accept-edits": "accept edits on",
+    "plan": "plan mode on",
+    "auto": "auto-approve on",
+}
 _FILE_TOKEN = re.compile(r"(?:^|\s)@(\S*)$")
 
 
@@ -203,6 +218,7 @@ class Tui:
         self._show_help = False
         self._exit_armed_at = 0.0
         self._closed = False
+        self._notice: tuple[str, float] = ("", 0.0)  # a short-lived footer message
         self._compacting = False
         self._last_activity = time.monotonic()
         self._last_result: tuple[str, float] = ("", 0.0)
@@ -526,18 +542,32 @@ class Tui:
             self.emit(entry, gap=True)
         self.emit(Text("  ✻ " + t("Session resumed — carry on"), style="dim"), gap=True)
 
-    async def approve(self, item: ToolApprovalItem) -> str:
+    async def _ask(
+        self,
+        title: str,
+        subject: str,
+        question: str,
+        options: list[tuple[str, str]],
+        cancel: str,
+        body: StyleAndTextTuples | None = None,
+        allowed_by_mode: Callable[[], bool] | None = None,
+    ) -> str:
+        """Open the dialog over the input box and wait for a choice.
+
+        `options` are (label, value) pairs; Esc answers `cancel`.
+        """
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-        # Calls made by a sub-agent are not in the live area, so the dialog has to
-        # show what is about to happen itself.
-        args = parse_args(item.arguments)
-        preview = None if item.call_id in self._calls else call_preview(item.tool_name or "", args)
         self._approval = {
-            "item": item,
+            "title": title,
+            "subject": subject,
+            "question": question,
+            "options": options,
+            "cancel": cancel,
+            "body": body or [],
+            "allowed_by_mode": allowed_by_mode or (lambda: False),
             "future": future,
             "index": 0,
             "opened": time.monotonic(),
-            "preview": self._fragments(preview) if preview is not None else [],
         }
         self.app.invalidate()
         try:
@@ -545,6 +575,48 @@ class Tui:
         finally:
             self._approval = None
             self.app.invalidate()
+
+    async def approve(self, item: ToolApprovalItem, rule: str | None = None) -> str:
+        name = item.tool_name or "tool"
+        args = parse_args(item.arguments)
+        # Calls made by a sub-agent are not in the live area, so the dialog has to
+        # show what is about to happen itself.
+        preview = None if item.call_id in self._calls else call_preview(name, args)
+        options = [(t("Yes"), "yes")]
+        if rule:
+            if ":" in rule:  # a command prefix or a host
+                label = t("Yes, and don't ask again for {what} in this project", what=f"`{describe_rule(rule)}`")
+            else:
+                label = t("Yes, and don't ask again for {what} in this project", what=tool_label(name))
+            options.append((label, "always"))
+        options.append((t("No, tell the agent to do it differently (esc)"), "no"))
+        permissions = self.session.context.permissions
+        return await self._ask(
+            f"{t('Approval needed')} · {tool_label(name)}",
+            call_title(name, args),
+            t("Allow this?"),
+            options,
+            cancel="no",
+            body=self._fragments(preview) if preview is not None else [],
+            allowed_by_mode=lambda: permissions.decide(name, args) == "allow",
+        )
+
+    async def approve_plan(self, plan: str) -> str:
+        self.emit(render_assistant(plan), gap=True)
+        return await self._ask(
+            t("Plan ready"),
+            t("The plan is shown above."),
+            t("Carry out this plan?"),
+            [
+                (t("Yes, and accept file edits without asking"), "accept-edits"),
+                (t("Yes, and ask before each edit"), "default"),
+                (t("No, keep planning (esc)"), ""),
+            ],
+            cancel="",
+        )
+
+    def notice(self, text: str) -> None:
+        self.emit(Text(f"  ✻ {text}", style="dim"), gap=True)
 
     def turn_done(self, input_tokens: int, output_tokens: int) -> None:
         elapsed = time.monotonic() - self._turn_started
@@ -571,10 +643,15 @@ class Tui:
 
     def _line_prefix(self, line_number: int, wrap_count: int) -> StyleAndTextTuples:
         first = line_number == 0 and wrap_count == 0
+        if self.input.text.startswith("!"):
+            return [("class:prompt.shell", "! " if first else "  ")]
         return [("class:prompt", "❯ " if first else "  ")]
 
     def _rule_style(self) -> str:
-        return "class:rule.auto" if self.session.context.auto_approve else "class:rule"
+        if self.input.text.startswith("!"):
+            return "class:rule.shell"
+        mode = self.session.mode
+        return "class:rule" if mode == "default" else f"class:rule.{mode}"
 
     def _build_layout(self) -> HSplit:
         approving = Condition(lambda: self._approval is not None)
@@ -681,12 +758,23 @@ class Tui:
     def _footer_text(self) -> StyleAndTextTuples:
         if time.monotonic() - self._exit_armed_at < EXIT_CONFIRM_SECONDS:
             return [("class:footer.notice", "  " + t("Press Ctrl-C again to quit"))]
-        if self.session.context.auto_approve:
-            return [
-                ("class:footer.auto", "  ⏵⏵ " + t("auto-approve")),
-                ("class:footer", " · " + t("shift+tab to turn off")),
+        notice, shown_at = self._notice
+        if notice and time.monotonic() - shown_at < EXIT_CONFIRM_SECONDS:
+            return [("class:footer.notice", f"  {notice}")]
+        mode = self.session.mode
+        out: StyleAndTextTuples
+        if mode == "default":
+            out = [("class:footer", "  " + t("? shortcuts · / commands · @ files"))]
+        else:
+            mark = "⏸" if mode == "plan" else "⏵⏵"
+            out = [
+                (f"class:footer.{mode}", f"  {mark} " + t(MODE_LABELS[mode])),
+                ("class:footer", " · " + t("shift+tab to switch")),
             ]
-        return [("class:footer", "  " + t("? shortcuts · / commands · @ files"))]
+        running = len(self.session.context.shell_tasks.running)
+        if running:
+            out.append(("class:footer", " · " + t("{count} background", count=running)))
+        return out
 
     def _footer_right_text(self) -> StyleAndTextTuples:
         session = self.session
@@ -758,27 +846,20 @@ class Tui:
         approval = self._approval
         if approval is None:
             return []
-        item: ToolApprovalItem = approval["item"]
-        name = item.tool_name or "tool"
-        options = [
-            t("Yes"),
-            t("Yes, and don't ask again for {tool} this session", tool=tool_label(name)),
-            t("No, tell the agent to do it differently (esc)"),
-        ]
         out: StyleAndTextTuples = [
             ("", "\n"),
             ("class:approval.title", "─" * self._columns() + "\n"),
-            ("class:approval.title", f" {t('Approval needed')} · {tool_label(name)}\n"),
-            ("", f"   {call_title(name, parse_args(item.arguments))}\n"),
-            *approval["preview"],
-            ("", "\n\n" if approval["preview"] else "\n"),
-            ("", f" {t('Allow this?')}\n"),
+            ("class:approval.title", f" {approval['title']}\n"),
+            ("", f"   {approval['subject']}\n"),
+            *approval["body"],
+            ("", "\n\n" if approval["body"] else "\n"),
+            ("", f" {approval['question']}\n"),
         ]
-        for index, label in enumerate(options):
+        for index, (label, _value) in enumerate(approval["options"]):
             selected = index == approval["index"]
             style = "class:approval.selected" if selected else ""
             out.append((style, f" {'❯' if selected else ' '} {index + 1}. {label}\n"))
-        out.append(("class:dim", " " + t("↑↓ select · enter confirm · shift+tab approve everything")))
+        out.append(("class:dim", " " + t("↑↓ select · enter confirm · shift+tab switch mode")))
         return out
 
     # ------------------------------------------------------------ key bindings
@@ -796,19 +877,32 @@ class Tui:
                 return
             if time.monotonic() - approval["opened"] < self.approval_grace:
                 return
-            approval["future"].set_result(APPROVAL_CHOICES[index])
+            if 0 <= index < len(approval["options"]):
+                approval["future"].set_result(approval["options"][index][1])
+
+        def cancel() -> None:
+            approval = self._approval
+            if approval is None or approval["future"].done():
+                return
+            if time.monotonic() - approval["opened"] >= self.approval_grace:
+                approval["future"].set_result(approval["cancel"])
+
+        def move(step: int) -> None:
+            approval = self._approval
+            if approval is not None:
+                approval["index"] = (approval["index"] + step) % len(approval["options"])
 
         # --- approval dialog: it owns the keyboard while it is open
         @kb.add("up", filter=approving)
         @kb.add("c-p", filter=approving)
         def _(event: KeyPressEvent) -> None:
-            self._approval["index"] = (self._approval["index"] - 1) % 3  # type: ignore[index]
+            move(-1)
 
         @kb.add("down", filter=approving)
         @kb.add("c-n", filter=approving)
         @kb.add("tab", filter=approving)
         def _(event: KeyPressEvent) -> None:
-            self._approval["index"] = (self._approval["index"] + 1) % 3  # type: ignore[index]
+            move(1)
 
         @kb.add("enter", filter=approving)
         def _(event: KeyPressEvent) -> None:
@@ -819,7 +913,7 @@ class Tui:
 
         @kb.add("escape", filter=approving)
         def _(event: KeyPressEvent) -> None:
-            answer(2)
+            cancel()
 
         @kb.add("<any>", filter=approving)
         def _(event: KeyPressEvent) -> None:
@@ -887,14 +981,25 @@ class Tui:
 
         @kb.add("s-tab")
         def _(event: KeyPressEvent) -> None:
-            context = self.session.context
-            context.auto_approve = not context.auto_approve
-            if context.auto_approve and self._approval is not None:
+            self.session.context.permissions.cycle()
+            # If the new mode already allows what is being asked about, do not make
+            # the user answer it as well.
+            approval = self._approval
+            if approval is not None and approval.get("allowed_by_mode", lambda: False)():
                 answer(0)
 
         @kb.add("c-l")
         def _(event: KeyPressEvent) -> None:
             event.app.renderer.clear()
+
+        @kb.add("c-v", filter=~approving)
+        def _(event: KeyPressEvent) -> None:
+            # Text is pasted by the terminal itself; this is for an image on the clipboard.
+            image = clipboard_image()
+            if image is None:
+                self._notice = (t("No image on the clipboard"), time.monotonic())
+            else:
+                self.input.buffer.insert_text(f"{image} ")
 
         @kb.add("c-c")
         def _(event: KeyPressEvent) -> None:
@@ -980,12 +1085,23 @@ class Tui:
             )
         return text
 
+    async def _user_shell(self, command: str) -> None:
+        """Run a `!command` typed by the user and show its output."""
+        self._verb = t("Running your command")
+        output, code = await self.session.user_shell(command)
+        text = f"{output}\n[exit code: {code}]".lstrip()
+        self.emit(render_output("run_shell", {"command": command}, text))
+
     async def _run_turn(self, prompt: str) -> None:
+        self._verb = petlib.verb("thinking")
+        await self._run(self.session.run_turn(prompt))
+
+    async def _run(self, work: Any) -> None:
+        """Run something interruptible (a turn, a shell command) and report how it ended."""
         self._turn_started = time.monotonic()
         self._turn_tools = 0
         self._turn_output_tokens = 0
-        self._verb = petlib.verb("thinking")
-        self._turn = asyncio.ensure_future(self.session.run_turn(prompt))
+        self._turn = asyncio.ensure_future(work)
         failed = True
         try:
             await asyncio.shield(self._turn)
@@ -1030,6 +1146,9 @@ class Tui:
             text = self._queue.popleft()
             self.app.invalidate()
             self.emit(render_user(text), gap=True)
+            if text.startswith("!") and text[1:].strip():
+                await self._run(self._user_shell(text[1:].strip()))
+                continue
             if not text.startswith("/"):
                 await self._run_turn(text)
                 continue

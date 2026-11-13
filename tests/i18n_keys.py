@@ -28,8 +28,8 @@ def translation_keys() -> set[str]:
     """All English texts that can reach `t()`."""
     from nori import pet
     from nori.branding import TAGLINE
-    from nori.commands import BUILTIN_COMMANDS
-    from nori.tui import SHORTCUTS
+    from nori.commands import BUILTIN_COMMANDS, MODE_DESCRIPTIONS
+    from nori.tui import MODE_LABELS, SHORTCUTS
 
     keys: set[str] = set()
     all_constants: dict[str, str] = {}
@@ -61,6 +61,8 @@ def translation_keys() -> set[str]:
     for verbs in pet.TOOL_VERBS.values():
         keys.update(verbs)
     keys.update(("Endpoint", "API key", "Config"))  # labels of Session.info
+    keys.update(MODE_DESCRIPTIONS.values())
+    keys.update(MODE_LABELS.values())
     return keys
 
 

@@ -282,7 +282,8 @@ def test_commands_and_completion(tmp_path):
 
     assert [c.name for c in match_commands(session, "/")][-1] == "review"
     # prefix matches first, then names merely containing the letters
-    assert [c.name for c in match_commands(session, "/m")] == ["model", "mcp", "compact", "resume"]
+    assert [c.name for c in match_commands(session, "/m")] == [
+        "model", "mcp", "mode", "compact", "resume", "permissions"]  # fmt: skip
     assert [c.name for c in match_commands(session, "/cmp")] == ["compact"]  # fuzzy
     assert match_commands(session, "/zzz") == []
     assert match_commands(session, "/model x") == [] and match_commands(session, "hi") == []

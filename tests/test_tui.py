@@ -113,7 +113,7 @@ def test_approval_dialog_yes_no_and_always(tmp_path):
     h = run_tui(tmp_path, steps, scenario)
 
     assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt", "c.txt", "d.txt"]
-    assert h.tui.session.context.always_allowed == {"write_file"}
+    assert h.tui.session.context.permissions.rules == ["write_file"]
     assert h.tui.input.text == ""
     assert "● Write(a.txt)" in h.text and "+1" in h.text and "done" in h.text
 
@@ -184,9 +184,9 @@ def test_slash_menu_commands_and_skills(tmp_path):
     async def scenario(h: Harness):
         tui = h.tui
         h.send("/")
-        await h.until(lambda: len(tui._menu()) == 14)
+        await h.until(lambda: len(tui._menu()) == 18)
         menu = "".join(text for _style, text in tui._menu_text())
-        assert "❯   /help" in menu and "1/14" in menu and "/model [name]" in menu  # eight rows shown, the list scrolls
+        assert "❯   /help" in menu and "1/18" in menu and "/model [name]" in menu  # eight rows shown, the list scrolls
         review = tui._menu()[-1]
         assert (review.label, review.description) == ("/review", "review code")
 
@@ -205,7 +205,7 @@ def test_slash_menu_commands_and_skills(tmp_path):
         await h.idle()
 
         h.send(SHIFT_TAB)
-        await h.until(lambda: tui.session.context.auto_approve)
+        await h.until(lambda: tui.session.mode == "accept-edits")
         h.send("line one" + ALT_ENTER + "line two")
         await h.until(lambda: tui.input.text == "line one\nline two")
         h.send(CTRL_C)  # clears the input

@@ -7,8 +7,8 @@ import fnmatch
 import os
 import re
 import shutil
-import signal
 import subprocess
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +18,10 @@ from agents import RunContextWrapper, function_tool
 from agents.tool_context import ToolContext
 from typing_extensions import TypedDict
 
+from . import web
+from .checkpoints import Checkpoints
+from .permissions import Permissions
+from .shelltasks import ShellTasks, kill_process
 from .skills import Skill
 
 MAX_OUTPUT_CHARS = 30_000
@@ -33,12 +37,28 @@ class AgentContext:
     """Per-session state shared with every tool call."""
 
     workspace: Path
-    auto_approve: bool = False
-    always_allowed: set[str] = field(default_factory=set)
+    permissions: Permissions = None  # type: ignore[assignment]  # set in __post_init__
     skills: dict[str, Skill] = field(default_factory=dict)
     plan: list[dict[str, str]] = field(default_factory=list)
+    checkpoints: Checkpoints = field(default_factory=Checkpoints)
+    shell_tasks: ShellTasks = field(default_factory=ShellTasks)
+    search_engine: str = "duckduckgo"
     # Set by the session: runs a sub-agent and returns its final report.
     spawn: Callable[[str, str, str], Awaitable[str]] | None = None
+    # Set by the session: shows a plan to the user; returns the mode they chose, or "".
+    present_plan: Callable[[str], Awaitable[str]] | None = None
+
+    def __post_init__(self) -> None:
+        if self.permissions is None:
+            self.permissions = Permissions(self.workspace)
+
+    @property
+    def auto_approve(self) -> bool:
+        return self.permissions.mode == "auto"
+
+    @auto_approve.setter
+    def auto_approve(self, value: bool) -> None:
+        self.permissions.set_mode("auto" if value else "default")
 
     def readable_roots(self) -> list[Path]:
         """The workspace plus skill directories, which are readable but not writable."""
@@ -96,9 +116,9 @@ def _walk(root: Path):
 
 
 def _needs_approval(tool_name: str):
-    async def check(ctx: Ctx, _params: dict[str, Any], _call_id: str) -> bool:
-        state = ctx.context
-        return not (state.auto_approve or tool_name in state.always_allowed)
+    async def check(ctx: Ctx, params: dict[str, Any], _call_id: str) -> bool:
+        # "deny" also goes through the approval path, where the session refuses it.
+        return ctx.context.permissions.decide(tool_name, params) != "allow"
 
     return check
 
@@ -141,6 +161,7 @@ def write_file(ctx: Ctx, path: str, content: str) -> str:
     """
     file = _resolve(ctx, path, write=True)
     existed = file.exists()
+    ctx.context.checkpoints.record(file)
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text(content, encoding="utf-8")
     verb = "Overwrote" if existed else "Created"
@@ -178,6 +199,7 @@ def edit_file(
             f"old_string occurs {count} times; add surrounding context to make it "
             "unique or set replace_all=true"
         )
+    ctx.context.checkpoints.record(file)
     file.write_text(text.replace(old_string, new_string), encoding="utf-8")
     return f"Edited {_rel(ctx, file)} ({count} replacement{'s' if count > 1 else ''})"
 
@@ -308,16 +330,30 @@ def grep(
 
 
 @function_tool(failure_error_function=_tool_error, needs_approval=_needs_approval("run_shell"))
-async def run_shell(ctx: Ctx, command: str, timeout: int = 120) -> str:
+async def run_shell(ctx: Ctx, command: str, timeout: int = 120, background: bool = False) -> str:
     """Run a shell command in the workspace root and return its combined stdout/stderr.
 
     Use it for git, running tests, builds and installs. Commands must be
     non-interactive. Do not use it to read or edit files; use the file tools.
 
+    Set background=true for commands that keep running (a dev server, a watcher)
+    or take very long: the call returns at once with a task id, and you read the
+    output later with shell_output and stop it with shell_kill.
+
     Args:
         command: The command line to run with the system shell.
-        timeout: Seconds to wait before the command is killed.
+        timeout: Seconds to wait before the command is killed (foreground only).
+        background: Start the command and return immediately.
     """
+    if background:
+        try:
+            task = await ctx.context.shell_tasks.start(command, ctx.context.workspace)
+        except RuntimeError as exc:
+            raise ToolError(str(exc)) from exc
+        return (
+            f"Started in the background as {task.id}. Use shell_output(task_id=\"{task.id}\") "
+            "to read its output and shell_kill to stop it."
+        )
     proc = await asyncio.create_subprocess_shell(
         command,
         cwd=ctx.context.workspace,
@@ -328,15 +364,7 @@ async def run_shell(ctx: Ctx, command: str, timeout: int = 120) -> str:
     )
 
     def kill() -> None:
-        if proc.returncode is not None:
-            return
-        try:
-            if os.name == "nt":
-                proc.kill()
-            else:
-                os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        kill_process(proc)
 
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=max(timeout, 1))
@@ -397,6 +425,102 @@ def update_plan(ctx: Ctx, steps: list[PlanStep]) -> str:
     return "\n".join(f"{PLAN_MARKS[p['status']]} {p['step']}" for p in plan)
 
 
+@function_tool(failure_error_function=_tool_error)
+async def shell_output(ctx: Ctx, task_id: str, wait: int = 0) -> str:
+    """Read the new output of a background command and whether it is still running.
+
+    Args:
+        task_id: The id returned by run_shell with background=true, e.g. "bg1".
+        wait: Seconds to wait for the command to finish or produce output first (max 60).
+    """
+    tasks = ctx.context.shell_tasks
+    task = tasks.get(task_id)
+    if task is None:
+        known = ", ".join(tasks.tasks) or "(none)"
+        raise ToolError(f"unknown task {task_id!r}; background tasks: {known}")
+    deadline = time.monotonic() + min(max(wait, 0), 60)
+    while task.running and task.read_to >= len(task.output) and time.monotonic() < deadline:
+        await asyncio.sleep(0.2)
+    if not task.running and task.reader is not None:
+        await asyncio.wait({task.reader}, timeout=1)  # let the last output arrive
+    output = task.take_new_output().rstrip()
+    return _truncate(f"{output or '(no new output)'}\n[{task.id}: {task.status}]")
+
+
+@function_tool(failure_error_function=_tool_error)
+async def shell_kill(ctx: Ctx, task_id: str) -> str:
+    """Stop a background command.
+
+    Args:
+        task_id: The id returned by run_shell with background=true.
+    """
+    task = ctx.context.shell_tasks.get(task_id)
+    if task is None:
+        raise ToolError(f"unknown task {task_id!r}")
+    if not task.running:
+        return f"{task.id} had already {task.status}."
+    await ctx.context.shell_tasks.kill(task)
+    return f"Stopped {task.id}."
+
+
+@function_tool(failure_error_function=_tool_error, needs_approval=_needs_approval("web_fetch"))
+async def web_fetch(ctx: Ctx, url: str) -> str:
+    """Fetch a web page or text file and return its content as readable text.
+
+    Use it to read documentation, an issue, or a link the user gave you.
+
+    Args:
+        url: The http(s) URL to fetch.
+    """
+    try:
+        return _truncate(await asyncio.to_thread(web.fetch, url))
+    except web.WebError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@function_tool(failure_error_function=_tool_error)
+async def web_search(ctx: Ctx, query: str) -> str:
+    """Search the web. Returns titles, URLs and snippets; use web_fetch to read a result.
+
+    Args:
+        query: What to search for.
+    """
+    if not query.strip():
+        raise ToolError("query must not be empty")
+    try:
+        results = await asyncio.to_thread(web.search, query, ctx.context.search_engine)
+    except web.WebError as exc:
+        raise ToolError(f"search failed ({exc})") from exc
+    return "\n\n".join(f"{r.title}\n{r.url}\n{r.snippet}".rstrip() for r in results)
+
+
+@function_tool(failure_error_function=_tool_error)
+async def present_plan(ctx: Ctx, plan: str) -> str:
+    """Show your plan to the user and ask for approval to start implementing it.
+
+    Only used in plan mode, after the research is done. Write the plan in Markdown:
+    what you will change, in which files, in what order, and how you will verify it.
+
+    Args:
+        plan: The complete plan.
+    """
+    context = ctx.context
+    if context.permissions.mode != "plan":
+        return "Plan mode is not on; you do not need approval for a plan. Proceed."
+    if not plan.strip():
+        raise ToolError("plan must not be empty")
+    if context.present_plan is None:
+        raise ToolError("there is no user to approve the plan here")
+    chosen = await context.present_plan(plan)
+    if not chosen:
+        return (
+            "The user did not approve the plan. Stay in plan mode: do not change anything. "
+            "Ask what they want different, or revise the plan and present it again."
+        )
+    context.permissions.set_mode(chosen)
+    return "The user approved the plan. Plan mode is off; start implementing it now."
+
+
 AGENT_TYPES = ("general", "explore")
 
 
@@ -428,10 +552,13 @@ async def spawn_agent(
     return _truncate(await ctx.context.spawn(ctx.tool_call_id, agent_type, prompt))
 
 
-READ_ONLY_TOOLS = [read_file, list_dir, glob_files, grep]
+READ_ONLY_TOOLS = [read_file, list_dir, glob_files, grep, web_search, web_fetch]
 # What a sub-agent may use: everything except planning and spawning further agents.
 SUBAGENT_TOOLS = {
-    "general": [read_file, write_file, edit_file, list_dir, glob_files, grep, run_shell, load_skill],
+    "general": [
+        read_file, write_file, edit_file, list_dir, glob_files, grep,
+        run_shell, shell_output, shell_kill, web_search, web_fetch, load_skill,
+    ],  # fmt: skip
     "explore": READ_ONLY_TOOLS,
 }
 
@@ -446,4 +573,9 @@ ALL_TOOLS = [
     load_skill,
     update_plan,
     spawn_agent,
+    shell_output,
+    shell_kill,
+    web_search,
+    web_fetch,
+    present_plan,
 ]

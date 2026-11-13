@@ -6,7 +6,7 @@ import datetime
 import platform
 from pathlib import Path
 
-from agents import Agent, Model, ModelSettings
+from agents import Agent, Model, ModelSettings, RunContextWrapper
 from agents.mcp import MCPServer
 
 from .branding import APP_NAME
@@ -38,6 +38,10 @@ parts; several calls in one response run in parallel. Do simple, targeted lookup
 If one is rejected, do not retry it unchanged: adapt, or ask the user what they want.
 - If a tool returns an error, read it and fix the cause instead of repeating the call.
 - `@path` in a user message refers to that file or directory in the workspace.
+- For commands that keep running (a dev server) use run_shell with background=true, \
+then shell_output to check on them.
+- Use web_search and web_fetch when you need information that is not in the workspace, \
+such as current documentation or an error message you do not recognise.
 
 # How to answer
 - Be concise; this is a terminal. Plain text or light Markdown.
@@ -107,12 +111,41 @@ def build_subagent(
     )
     return Agent[AgentContext](
         name=f"{APP_NAME} sub-agent ({agent_type})",
-        instructions=instructions,
+        instructions=with_mode(instructions),
         tools=list(SUBAGENT_TOOLS[agent_type]),
         mcp_servers=list(mcp_servers or []) if agent_type == "general" else [],
         model=model,
         model_settings=model_settings or ModelSettings(),
     )
+
+
+PLAN_MODE_PROMPT = """
+# Plan mode is ON
+The user wants a plan before anything is changed. Until they approve one:
+- Do NOT create or edit files, and do not run commands that change anything. \
+File edits will be refused.
+- Investigate with the read-only tools (read_file, grep, glob_files, list_dir, web tools, \
+explore sub-agents). Read-only shell commands such as `git log` are fine.
+- When you understand the task, call present_plan with a concrete plan: what you will \
+change, in which files, in what order, and how you will verify it. Ask the user instead \
+if a decision is theirs to make.
+- Only start implementing after present_plan reports that the user approved.
+"""
+
+MODE_PROMPTS = {
+    "plan": PLAN_MODE_PROMPT,
+    "accept-edits": "\n# Mode\nFile edits are applied without asking the user; commands still need approval.\n",
+    "auto": "\n# Mode\nYour tool calls run without asking the user. Be careful with destructive commands.\n",
+}
+
+
+def with_mode(base: str):
+    """Instructions that follow the permission mode, which can change during a session."""
+
+    def instructions(context: RunContextWrapper[AgentContext], _agent: Agent[AgentContext]) -> str:
+        return base + MODE_PROMPTS.get(context.context.permissions.mode, "")
+
+    return instructions
 
 
 def build_agent(
@@ -125,7 +158,7 @@ def build_agent(
     """Create the coding agent. `model=None` uses the SDK's default model."""
     return Agent[AgentContext](
         name=APP_NAME,
-        instructions=build_instructions(workspace, skills),
+        instructions=with_mode(build_instructions(workspace, skills)),
         tools=list(ALL_TOOLS),
         mcp_servers=list(mcp_servers or []),
         model=model,

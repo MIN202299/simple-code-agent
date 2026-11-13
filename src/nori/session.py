@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Protocol
@@ -25,6 +26,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from .agent import build_agent, build_subagent
+from .attachments import find_images, user_content
 from .compact import (
     COMPACT_AT,
     DEFAULT_CONTEXT_WINDOW,
@@ -36,8 +38,10 @@ from .compact import (
     summary_item,
 )
 from .i18n import t
+from .permissions import PLAN_REJECTION, Permissions, rule_for
 from .pet import Pet
 from .render import call_title, parse_args, render_call, render_output
+from .shelltasks import kill_process
 from .skills import Skill
 from .store import TITLE_CHARS, SessionRecord, SessionStore, new_session_id
 from .tools import AgentContext
@@ -47,6 +51,9 @@ COMPACTED = "Compacted context: about {before} → {after} tokens"
 COMPACTION_FAILED = "Compacting the context failed; continuing with the full context."
 SUBAGENT_MAX_TURNS = 100
 DEFAULT_RETRIES = 4
+USER_SHELL_CHARS = 20_000
+# User-role items that are bookkeeping rather than something the user typed.
+NOTE_PREFIXES = ("[The earlier part", "[Request", "[The user reverted", "[I ran this shell")
 RETRY_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504, 529})
 RETRYING = "Request failed ({reason}); retrying ({attempt}/{limit})…"
 REJECTION_MESSAGE = "The user rejected this tool call."
@@ -82,8 +89,18 @@ class UI(Protocol):
     def show_history(self, items: list[Any]) -> None:
         """Display a restored conversation."""
 
-    async def approve(self, item: ToolApprovalItem) -> str:
-        """Ask the user about a tool call. Returns "yes", "always" or "no"."""
+    async def approve(self, item: ToolApprovalItem, rule: str | None = None) -> str:
+        """Ask the user about a tool call. Returns "yes", "always" or "no".
+
+        `rule` is what "always" would allow from now on; None if no standing
+        rule can be offered for this call.
+        """
+
+    async def approve_plan(self, plan: str) -> str:
+        """Show a plan made in plan mode. Returns the mode to continue in, or "" to keep planning."""
+
+    def notice(self, text: str) -> None:
+        """A short informational line for the user."""
 
     def turn_done(self, input_tokens: int, output_tokens: int) -> None:
         """The turn finished; token counts are for this turn."""
@@ -137,8 +154,24 @@ class PlainUI:
         turns = sum(1 for item in items if isinstance(item, dict) and item.get("role") == "user")
         self.console.print(f"[dim]{t('Session resumed ({turns} turns).', turns=turns)}[/dim]")
 
-    async def approve(self, item: ToolApprovalItem) -> str:
+    async def approve(self, item: ToolApprovalItem, rule: str | None = None) -> str:
         return self.approver(item)
+
+    async def approve_plan(self, plan: str) -> str:
+        self.console.print(f"\n[bold yellow]{t('Plan')}[/bold yellow]")
+        self.console.print(plan, markup=False, highlight=False)
+        try:
+            answer = input(t("Carry out this plan? [y] yes / [e] yes, and accept edits / [n] keep planning: "))
+        except (EOFError, KeyboardInterrupt):
+            self.console.print()
+            return ""
+        answer = answer.strip().lower()
+        if answer in ("e", "edits"):
+            return "accept-edits"
+        return "default" if answer in ("y", "yes", "是") else ""
+
+    def notice(self, text: str) -> None:
+        self.console.print(f"[dim]{escape(text)}[/dim]", highlight=False)
 
     def turn_done(self, input_tokens: int, output_tokens: int) -> None:
         self.console.print(f"[dim]tokens: {input_tokens} in / {output_tokens} out[/dim]")
@@ -264,11 +297,17 @@ class Session:
         auto_compact: bool = True,
         store: SessionStore | None = None,
         retries: int = DEFAULT_RETRIES,
+        mode: str = "default",
+        permissions_path: Path | None = None,
     ) -> None:
+        permissions = Permissions(
+            workspace, "auto" if auto_approve else mode, path=permissions_path
+        )
         self.context = AgentContext(
-            workspace=workspace, auto_approve=auto_approve, skills=dict(skills or {})
+            workspace=workspace, permissions=permissions, skills=dict(skills or {})
         )
         self.context.spawn = self.run_subagent
+        self.context.present_plan = self._present_plan
         self.store = store  # None: conversations are not saved
         self.session_id = new_session_id()
         self._created = ""
@@ -378,7 +417,9 @@ class Session:
         for item in self.history:
             if isinstance(item, dict) and item.get("role") == "user":
                 text = item.get("content")
-                if isinstance(text, str) and not text.startswith(("[The earlier part", "[Request")):
+                if isinstance(text, list):  # a message with images: use its text part
+                    text = next((p.get("text") for p in text if isinstance(p, dict) and p.get("text")), "")
+                if isinstance(text, str) and text and not text.startswith(NOTE_PREFIXES):
                     return " ".join(text.split())[:TITLE_CHARS]
         return ""
 
@@ -420,20 +461,94 @@ class Session:
         state = result.to_state()
         for item in result.interruptions:
             name = item.tool_name or ""
+            args = parse_args(item.arguments)
+            permissions = self.context.permissions
+            rejection = REJECTION_MESSAGE
             async with self._approval_lock:
-                # The SDK also pauses when it had to normalise the arguments (e.g. the
-                # model left out a defaulted one), so honour the session policy here too.
-                if self.context.auto_approve or name in self.context.always_allowed:
-                    decision = "yes"
-                else:
-                    decision = await self.ui.approve(item)
-                if decision == "always":
-                    self.context.always_allowed.add(name)
-            if decision in ("yes", "always"):
+                # Decide again here rather than trusting why the SDK paused: it also
+                # pauses when it had to normalise the arguments, and an earlier answer
+                # in this batch may have changed the mode or added a rule.
+                verdict = permissions.decide(name, args)
+                if verdict == "deny":
+                    rejection = PLAN_REJECTION
+                elif verdict == "ask":
+                    rule = rule_for(name, args)
+                    answer = await self.ui.approve(item, rule)
+                    if answer == "always" and rule:
+                        permissions.add_rule(rule)
+                    verdict = "allow" if answer in ("yes", "always") else "deny"
+            if verdict == "allow":
                 state.approve(item)
             else:
-                state.reject(item, rejection_message=REJECTION_MESSAGE)
+                state.reject(item, rejection_message=rejection)
         return state
+
+    async def _present_plan(self, plan: str) -> str:
+        """Ask the user to approve a plan made in plan mode."""
+        async with self._approval_lock:
+            return await self.ui.approve_plan(plan)
+
+    @property
+    def mode(self) -> str:
+        return self.context.permissions.mode
+
+    # ------------------------------------------------------- undo, shell, close
+
+    def undo(self) -> tuple[str, list[str], list[str]] | None:
+        """Revert the file changes of the last turn that made any.
+
+        Returns (what that turn was, files restored, files deleted). The model is
+        told, so it does not assume its changes are still in place.
+        """
+        result = self.context.checkpoints.undo()
+        if result is None:
+            return None
+        turn, restored, deleted = result
+        workspace = self.context.workspace
+        names = lambda paths: [os.path.relpath(p, workspace) for p in paths]  # noqa: E731
+        restored_names, deleted_names = names(restored), names(deleted)
+        note = "[The user reverted the file changes of an earlier turn."
+        if restored_names:
+            note += f" Restored to their previous content: {', '.join(restored_names)}."
+        if deleted_names:
+            note += f" Deleted again (they had been created): {', '.join(deleted_names)}."
+        self.history.append({"role": "user", "content": note + " Re-read files before relying on them.]"})
+        self.save()
+        return turn.label, restored_names, deleted_names
+
+    async def user_shell(self, command: str, timeout: float = 300) -> tuple[str, int | None]:
+        """Run a command the user typed with `!`, and add it and its output to the context."""
+        process = await asyncio.create_subprocess_shell(
+            command,
+            cwd=self.context.workspace,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            start_new_session=os.name != "nt",
+        )
+        try:
+            raw, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            output = raw.decode("utf-8", errors="replace").rstrip()
+        except asyncio.TimeoutError:
+            kill_process(process)
+            output = f"(timed out after {int(timeout)}s and was stopped)"
+        except asyncio.CancelledError:
+            kill_process(process)
+            raise
+        code = process.returncode
+        shown = output if len(output) <= USER_SHELL_CHARS else output[:USER_SHELL_CHARS] + "\n…[truncated]"
+        self.history.append(
+            {
+                "role": "user",
+                "content": f"[I ran this shell command myself]\n$ {command}\n{shown}\n[exit code: {code}]",
+            }
+        )
+        self.save()
+        return output, code
+
+    def close(self) -> None:
+        """Release what the session holds: stops background commands."""
+        self.context.shell_tasks.kill_all()
 
     # ------------------------------------------------------------ sub-agents
 
@@ -537,8 +652,16 @@ class Session:
         untouched; a turn that is cancelled or runs out of model turns keeps the
         work finished so far, so the user can ask to continue.
         """
-        run_input: Any = [*self.history, {"role": "user", "content": text}]
+        images, problems = find_images(text, self.context.workspace)
+        for problem in problems:
+            self.ui.notice(t("Image not attached — {problem}", problem=problem))
+        if images:
+            names = ", ".join(path.name for path in images)
+            self.ui.notice(t("Attached {count} image(s): {names}", count=len(images), names=names))
+        message = {"role": "user", "content": user_content(text, images)}
+        run_input: Any = [*self.history, message]
         calls: dict[str, tuple[str, dict[str, Any]]] = {}
+        self.context.checkpoints.begin_turn(text)
         self._guard.compacted = None
         run_config = RunConfig(call_model_input_filter=self._guard.filter)
         while True:

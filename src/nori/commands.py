@@ -16,8 +16,9 @@ from .branding import ACCENT, short_path
 from .compact import COMPACT_AT
 from .config import ConfigError, load_config, parse_token_count, save_config, update_config
 from .i18n import LANGUAGES, get_language, set_language, t
+from .permissions import MODES
 from .pet import art as pet_art
-from .render import format_tokens, shorten
+from .render import format_tokens, shorten, tool_label
 from .session import Session
 from .skills import Skill
 from .store import SessionRecord
@@ -70,10 +71,29 @@ BUILTIN_COMMANDS = [
     Command("mcp", "List connected MCP servers and their tools"),
     Command("lang", "Switch the interface language", "[en|zh]", picker=True),
     Command("pet", "Meet your pet (name <name> · hide · show)", "[action]"),
-    Command("yes", "Toggle auto-approve for file writes and commands"),
+    Command("mode", "Switch the permission mode", "[mode]", picker=True),
+    Command("permissions", "Show or remove the allow rules of this project", "[remove N|clear]"),
+    Command("undo", "Revert the file changes of the last turn"),
+    Command("tasks", "List background commands"),
+    Command("yes", "Toggle auto mode (approve everything)"),
     Command("exit", "Quit"),
 ]
-ALIASES = {"quit": "exit", "new": "clear", "language": "lang", "models": "model"}
+ALIASES = {
+    "quit": "exit",
+    "new": "clear",
+    "language": "lang",
+    "models": "model",
+    "rewind": "undo",
+    "plan": "mode plan",
+}
+NO_RULES = 'No allow rules for this project. Choose "don\'t ask again" in an approval to add one.'
+# Permission modes: English description, translated when shown.
+MODE_DESCRIPTIONS = {
+    "default": "ask before file changes and commands",
+    "accept-edits": "apply file edits without asking; commands still ask",
+    "plan": "read-only: research and propose a plan first",
+    "auto": "approve everything without asking",
+}
 
 
 def all_commands(session: Session) -> list[Command]:
@@ -191,7 +211,7 @@ def _status(session: Session, emit: Emit) -> None:
         *((t(label), value) for label, value in session.info.items()),
         (t("Workspace"), short_path(context.workspace)),
         (t("Language"), LANGUAGES[get_language()]),
-        (t("Auto-approve"), on if context.auto_approve else off),
+        (t("Mode"), context.permissions.mode),
         (t("Extensions"), extensions_summary(session)),
         (
             t("Context"),
@@ -375,9 +395,64 @@ def _lang(session: Session, arg: str, emit: Emit) -> None:
     emit(f"[dim]{t('Type /lang en or /lang zh to switch.')}[/dim]")
 
 
+def _mode(session: Session, arg: str, emit: Emit) -> None:
+    permissions = session.context.permissions
+    if arg:
+        if not permissions.set_mode(arg.lower()):
+            message = t("Unknown mode {value}; use one of: {modes}", value=escape(arg), modes=", ".join(MODES))
+            emit(f"[red]{message}[/red]")
+            return
+    description = t(MODE_DESCRIPTIONS[permissions.mode])
+    emit(f"[dim]{t('Mode: {mode}', mode=permissions.mode)} — {description}[/dim]")
+
+
+def _permissions(session: Session, arg: str, emit: Emit) -> None:
+    permissions = session.context.permissions
+    action, _, value = arg.partition(" ")
+    if action == "clear":
+        permissions.clear_rules()
+    elif action == "remove":
+        removed = permissions.remove_rule(int(value) - 1) if value.strip().isdigit() else None
+        if removed is None:
+            emit(f"[red]{t('No rule with that number.')}[/red]")
+            return
+    if not permissions.rules:
+        emit(f"[dim]{t(NO_RULES)}[/dim]")
+        return
+    emit(f"[dim]{t('Allowed without asking in this project:')}[/dim]")
+    for number, rule in enumerate(permissions.rules, 1):
+        tool, _, detail = rule.partition(":")
+        emit(Text.assemble("  ", (f"{number:>2}. ", "bold"), tool_label(tool), f"  {detail}" if detail else ""))
+    emit(f"[dim]  {t('Remove one with /permissions remove <number>, or all with /permissions clear.')}[/dim]")
+
+
+def _undo(session: Session, emit: Emit) -> None:
+    result = session.undo()
+    if result is None:
+        emit(f"[dim]{t('Nothing to undo: no file changes were made through the edit tools.')}[/dim]")
+        return
+    label, restored, deleted = result
+    emit(f"[dim]{t('Reverted the file changes of: {turn}', turn=escape(label or '…'))}[/dim]")
+    for name in restored:
+        emit(f"  [dim]{t('restored')}[/dim]  {escape(name)}")
+    for name in deleted:
+        emit(f"  [dim]{t('deleted')}[/dim]  {escape(name)}")
+    emit(f"[dim]  {t('Changes made by shell commands are not tracked and were not reverted.')}[/dim]")
+
+
+def _tasks(session: Session, emit: Emit) -> None:
+    tasks = session.context.shell_tasks.tasks
+    if not tasks:
+        emit(f"[dim]{t('No background commands.')}[/dim]")
+        return
+    for task in tasks.values():
+        state = t("running") if task.running else t("exited ({code})", code=task.process.returncode)
+        emit(Text.assemble("  ", (task.id, "bold"), f"  {state}  ", (shorten(task.command, 80), "dim")))
+
+
 async def picker_choices(session: Session, name: str) -> tuple[str, list[Choice]] | None:
     """The list a command offers when run without an argument (None: no picker)."""
-    name = ALIASES.get(name, name)
+    name = ALIASES.get(name, name).partition(" ")[0]
     if name == "model":
         choices = []
         for model in await session.available_models():
@@ -394,6 +469,13 @@ async def picker_choices(session: Session, name: str) -> tuple[str, list[Choice]
             for record in _other_sessions(session)
         ]  # fmt: skip
         return t("Resume a session"), choices
+    if name == "mode":
+        current = session.context.permissions.mode
+        choices = [
+            Choice(mode, t(MODE_DESCRIPTIONS[mode]), f"/mode {mode}", current=mode == current)
+            for mode in MODES
+        ]
+        return t("Select a mode"), choices
     if name == "lang":
         choices = [
             Choice(label, code, f"/lang {code}", current=code == get_language())
@@ -408,8 +490,9 @@ async def run_command(session: Session, line: str, emit: Emit) -> CommandResult:
     command, _, arg = line.partition(" ")
     arg = arg.strip()
     name = command[1:].lower()
-    if name not in session.context.skills:
-        name = ALIASES.get(name, name)
+    if name not in session.context.skills and name in ALIASES:
+        name, _, alias_arg = ALIASES[name].partition(" ")
+        arg = arg or alias_arg
     if name == "exit":
         return CommandResult(exit=True)
     if name == "help":
@@ -431,6 +514,14 @@ async def run_command(session: Session, line: str, emit: Emit) -> CommandResult:
         session.context.auto_approve = not session.context.auto_approve
         state = t("on") if session.context.auto_approve else t("off")
         emit(f"[dim]{t('Auto-approve is {state}.', state=state)}[/dim]")
+    elif name == "mode":
+        _mode(session, arg, emit)
+    elif name == "permissions":
+        _permissions(session, arg, emit)
+    elif name == "undo":
+        _undo(session, emit)
+    elif name == "tasks":
+        _tasks(session, emit)
     elif name == "skills":
         _skills(session, emit)
     elif name == "mcp":

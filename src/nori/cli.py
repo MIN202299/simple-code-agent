@@ -43,6 +43,7 @@ from .config import (
     run_setup,
 )
 from .i18n import normalize_language, set_language, t
+from .permissions import MODES, rules_path
 from .mcp_config import MCPConfigError, MCPServerSpec, build_server, load_mcp_specs
 from .session import PlainUI, Session
 from .skills import discover_skills
@@ -97,6 +98,14 @@ def plain_repl(runner: asyncio.Runner, session: Session, console: Console) -> No
             console.print()
             break
         if not line:
+            continue
+        if line.startswith("!") and line[1:].strip():
+            try:
+                output, code = runner.run(session.user_shell(line[1:].strip()))
+            except KeyboardInterrupt:
+                console.print(f"\n[yellow]{t('Interrupted.')}[/yellow]")
+                continue
+            console.print(f"{output}\n[exit code: {code}]".lstrip(), markup=False, highlight=False)
             continue
         if not line.startswith("/"):
             run_plain_turn(runner, session, console, line)
@@ -217,6 +226,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-y", "--yes", action="store_true", help=t("approve file writes and commands automatically")
     )
+    parser.add_argument(
+        "--mode",
+        choices=MODES,
+        help=t("permission mode: default, accept-edits, plan or auto (default: default)"),
+    )
     parser.add_argument("--plain", action="store_true", help=t("use plain line-by-line output instead of the TUI"))
     parser.add_argument("--no-mcp", action="store_true", help=t("do not load MCP servers"))
     parser.add_argument("--no-skills", action="store_true", help=t("do not load skills"))
@@ -324,6 +338,7 @@ def main(argv: list[str] | None = None) -> int:
         manager = MCPServerManager(
             [build_server(spec, workspace) for spec in specs], connect_in_parallel=True
         )
+        session: Session | None = None
         try:
             servers = runner.run(connect_mcp(manager, console)) if specs else []
             use_tui = interactive and not args.plain and not args.prompt
@@ -331,7 +346,8 @@ def main(argv: list[str] | None = None) -> int:
             session = Session(
                 workspace,
                 model=settings.model,
-                auto_approve=args.yes,
+                mode="auto" if args.yes else (args.mode or settings.mode),
+                permissions_path=rules_path(),
                 max_turns=settings.max_turns if use_tui else unattended_turns,
                 context_window=settings.context_window,
                 auto_compact=settings.auto_compact,
@@ -347,6 +363,7 @@ def main(argv: list[str] | None = None) -> int:
                 "Config": short_path(config_path),
             }
             session.config_path = config_path
+            session.context.search_engine = settings.search_engine
             session.models = [dict(entry) for entry in settings.models]
             session.default_context_window = settings.default_context_window
             session.fetch_models = model_lister(client)
@@ -366,6 +383,8 @@ def main(argv: list[str] | None = None) -> int:
                     session.ui.show_history(session.history)
                 plain_repl(runner, session, console)
         finally:
+            if session is not None:
+                session.close()
             if specs:
                 runner.run(manager.cleanup_all())
     return 0

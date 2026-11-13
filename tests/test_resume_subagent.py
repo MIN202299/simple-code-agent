@@ -215,7 +215,8 @@ def test_sub_agent_runs_in_its_own_context_and_reports_back(tmp_path):
     # the sub-agent starts from the prompt alone and has a restricted toolset
     assert sub_first.input == [{"content": "Find TODOs.", "role": "user"}]
     assert "sub-agent" in sub_first.system_instructions
-    assert sorted(t.name for t in sub_first.tools) == ["glob_files", "grep", "list_dir", "read_file"]
+    assert sorted(t.name for t in sub_first.tools) == [
+        "glob_files", "grep", "list_dir", "read_file", "web_fetch", "web_search"]  # fmt: skip
     assert "spawn_agent" in [t.name for t in main_first.tools]
     assert "secret context" not in str(sub_second.input)
     # the main agent gets only the report, not the sub-agent's intermediate steps

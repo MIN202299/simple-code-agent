@@ -98,8 +98,7 @@ def load_mcp_specs(workspace: Path, home: Path | None = None) -> list[MCPServerS
 
 
 async def _needs_approval(ctx: RunContextWrapper[Any], _agent: Any, tool: Any) -> bool:
-    state = ctx.context
-    return not (state.auto_approve or tool.name in state.always_allowed)
+    return ctx.context.permissions.decide(tool.name) != "allow"
 
 
 def build_server(spec: MCPServerSpec, workspace: Path) -> MCPServer:
