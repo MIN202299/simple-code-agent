@@ -14,28 +14,37 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .branding import APP_NAME, app_dir
+from .i18n import t
 
 ART_WIDTH = 9
 MOODS = ("idle", "thinking", "working", "waiting", "happy", "error", "sleeping")
 
 # Level thresholds are on XP = 10 per finished task + 1 per tool call.
-TITLES = ("小奶猫", "见习喵", "码农喵", "资深喵", "架构喵", "传说喵")
+TITLES = ("Kitten", "Apprentice Cat", "Coder Cat", "Senior Cat", "Architect Cat", "Legendary Cat")
 
-THINKING_VERBS = ("琢磨中", "舔爪子思考", "盯着代码发呆", "竖起耳朵", "转圈圈", "酝酿中", "挠头中")
+THINKING_VERBS = (
+    "Pondering",
+    "Licking a paw in thought",
+    "Staring at the code",
+    "Ears perked up",
+    "Chasing its tail",
+    "Brewing an idea",
+    "Scratching its head",
+)
 TOOL_VERBS = {
-    "run_shell": ("敲命令", "盯着终端", "等命令跑完"),
-    "read_file": ("翻文件", "读代码"),
-    "write_file": ("写文件", "敲键盘"),
-    "edit_file": ("改代码", "动爪子修改"),
-    "grep": ("嗅探代码", "翻箱倒柜"),
-    "glob_files": ("找文件", "四处张望"),
-    "list_dir": ("巡视目录",),
-    "load_skill": ("学习新技能",),
-    "update_plan": ("整理计划",),
-    "spawn_agent": ("派出小伙伴", "召唤分身"),
+    "run_shell": ("Typing a command", "Watching the terminal", "Waiting for the command"),
+    "read_file": ("Flipping through files", "Reading code"),
+    "write_file": ("Writing a file", "Tapping the keyboard"),
+    "edit_file": ("Editing code", "Pawing at the code"),
+    "grep": ("Sniffing through the code", "Rummaging around"),
+    "glob_files": ("Looking for files", "Looking around"),
+    "list_dir": ("Patrolling the directory",),
+    "load_skill": ("Learning a new skill",),
+    "update_plan": ("Tidying the plan",),
+    "spawn_agent": ("Sending out a helper", "Summoning a clone"),
 }
-DEFAULT_TOOL_VERBS = ("使用工具", "忙活中")
-WRITING_VERBS = ("回复中", "组织语言", "喵喵说明")
+DEFAULT_TOOL_VERBS = ("Using a tool", "Busy at work")
+WRITING_VERBS = ("Replying", "Finding the words", "Meowing an explanation")
 
 
 def _frame(period: float, now: float, count: int = 2) -> int:
@@ -91,10 +100,10 @@ def face(mood: str = "idle", now: float = 0.0) -> str:
 def verb(mood: str, tool: str | None = None) -> str:
     """A short phrase for the status line describing what the pet is up to."""
     if mood == "working" and tool:
-        return random.choice(TOOL_VERBS.get(tool, DEFAULT_TOOL_VERBS))
+        return t(random.choice(TOOL_VERBS.get(tool, DEFAULT_TOOL_VERBS)))
     if mood == "writing":
-        return random.choice(WRITING_VERBS)
-    return random.choice(THINKING_VERBS)
+        return t(random.choice(WRITING_VERBS))
+    return t(random.choice(THINKING_VERBS))
 
 
 @dataclass
@@ -116,7 +125,7 @@ class Pet:
 
     @property
     def title(self) -> str:
-        return TITLES[min((self.level - 1) // 2, len(TITLES) - 1)]
+        return t(TITLES[min((self.level - 1) // 2, len(TITLES) - 1)])
 
     @property
     def next_level_xp(self) -> int:

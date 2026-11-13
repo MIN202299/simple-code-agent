@@ -15,6 +15,7 @@ import os
 import re
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,7 @@ from prompt_toolkit.output import Output
 from prompt_toolkit.shortcuts import print_formatted_text
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import TextArea
+from rich.cells import cell_len
 from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.table import Table
@@ -42,8 +44,15 @@ from rich.text import Text
 from . import __version__
 from . import pet as petlib
 from .branding import ACCENT, APP_NAME, COMMAND, TAGLINE, app_dir, short_path
-from .commands import match_commands, run_command
+from .commands import (
+    extensions_summary,
+    fuzzy_rank,
+    match_commands,
+    picker_choices,
+    run_command,
+)
 from .compact import COMPACT_AT
+from .i18n import t
 from .pet import Pet
 from .render import (
     call_preview,
@@ -60,7 +69,7 @@ from .render import (
     split_blocks,
     tool_label,
 )
-from .session import Session
+from .session import COMPACTED, COMPACTION_FAILED, Session
 from .tools import SKIP_DIRS
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"  # running tool calls
@@ -79,18 +88,18 @@ SUMMARY_MIN_SECONDS = 5.0
 # ignore them briefly so type-ahead cannot approve a tool call by accident.
 APPROVAL_GRACE_SECONDS = 0.5
 
-PLACEHOLDER = "描述你想做的事…"
+# Key and English description; descriptions are translated when shown.
 SHORTCUTS = [
-    ("enter", "发送"),
-    ("alt+enter", "换行"),
-    ("esc", "中断任务"),
-    ("/", "命令"),
-    ("@", "引用文件"),
-    ("↑ ↓", "历史输入"),
-    ("shift+tab", "切换自动批准"),
-    ("ctrl+l", "清屏"),
-    ("ctrl+c", "中断 / 清空 / 退出"),
-    ("ctrl+d", "退出"),
+    ("enter", "send"),
+    ("alt+enter", "new line"),
+    ("esc", "interrupt the task"),
+    ("/", "commands"),
+    ("@", "mention a file"),
+    ("↑ ↓", "input history"),
+    ("shift+tab", "toggle auto-approve"),
+    ("ctrl+l", "clear the screen"),
+    ("ctrl+c", "interrupt / clear / quit"),
+    ("ctrl+d", "quit"),
 ]
 
 STYLE = Style.from_dict(
@@ -111,6 +120,8 @@ STYLE = Style.from_dict(
         "queued": "fg:ansibrightblack italic",
         "menu": "fg:ansibrightblack",
         "menu.selected": f"fg:{ACCENT} bold",
+        "menu.title": "bold",
+        "menu.current": "fg:ansigreen",
         "help.key": "bold",
         "approval.title": "fg:ansiyellow bold",
         "approval.selected": f"fg:{ACCENT} bold",
@@ -123,17 +134,25 @@ _FILE_TOKEN = re.compile(r"(?:^|\s)@(\S*)$")
 
 @dataclass(frozen=True)
 class MenuItem:
-    label: str
-    description: str
+    label: str  # the text inserted or shown, e.g. "/model" or "@src/a.py"
+    description: str = ""
+    hint: str = ""  # argument hint shown after the label, e.g. "[name]"
     takes_arg: bool = False
+    picker: bool = False  # choosing it opens a list of choices
+    tag: str = ""  # e.g. "skill"
+    command: str = ""  # picker rows: the command line to run
+    current: bool = False  # picker rows: the active choice
 
 
 class _Placeholder(Processor):
     """Shows a hint in the empty input box."""
 
+    def __init__(self, text: Callable[[], str]) -> None:
+        self.text = text
+
     def apply_transformation(self, ti: TransformationInput) -> Transformation:
         if ti.lineno == 0 and not ti.document.text:
-            return Transformation([*ti.fragments, ("class:placeholder", PLACEHOLDER)])
+            return Transformation([*ti.fragments, ("class:placeholder", self.text())])
         return Transformation(ti.fragments)
 
 
@@ -179,6 +198,8 @@ class Tui:
         self._menu_index = 0
         self._menu_cache: tuple[Any, str, list[MenuItem]] = (None, "", [])
         self._menu_dismissed: Any = None
+        # An open list of choices (models, sessions, languages); the input box filters it.
+        self._picker: dict[str, Any] | None = None
         self._show_help = False
         self._exit_armed_at = 0.0
         self._closed = False
@@ -194,7 +215,7 @@ class Tui:
             wrap_lines=True,
             history=history if history is not None else InMemoryHistory(),
             get_line_prefix=self._line_prefix,
-            input_processors=[_Placeholder()],
+            input_processors=[_Placeholder(self._placeholder)],
             height=Dimension(min=1, max=12),
             dont_extend_height=True,
         )
@@ -273,16 +294,38 @@ class Tui:
         if self._approval is not None:
             return "", []
         buffer = self.input.buffer
-        key = (buffer.text, buffer.cursor_position)
-        if key == self._menu_dismissed:
+        picker = self._picker
+        key = (buffer.text, buffer.cursor_position, id(picker), len(picker["choices"]) if picker else 0)
+        if picker is None and key == self._menu_dismissed:
             return "", []
         if key == self._menu_cache[0]:
             return self._menu_cache[1], self._menu_cache[2]
         kind, items = "", []
-        commands = match_commands(self.session, buffer.text)
-        if commands:
+        commands = match_commands(self.session, buffer.text) if picker is None else []
+        if picker is not None:
+            kind = "picker"
+            ranked = []
+            for order, choice in enumerate(picker["choices"]):
+                rank = fuzzy_rank(buffer.text.strip(), choice.label)
+                if rank is not None:
+                    ranked.append((rank, order, choice))
+            items = [
+                MenuItem(c.label, c.description, command=c.command, current=c.current)
+                for _rank, _order, c in sorted(ranked, key=lambda r: r[:2])
+            ]
+        elif commands:
             kind = "command"
-            items = [MenuItem(f"/{c.name}", c.description, c.takes_arg) for c in commands]
+            items = [
+                MenuItem(
+                    f"/{c.name}",
+                    c.description if c.skill else t(c.description),
+                    hint=c.arg,
+                    takes_arg=c.takes_arg,
+                    picker=c.picker,
+                    tag="skill" if c.skill else "",
+                )
+                for c in commands
+            ]
         else:
             token = _FILE_TOKEN.search(buffer.document.text_before_cursor)
             if token:
@@ -298,7 +341,12 @@ class Tui:
         kind, items = self._menu_state()
         item = items[min(self._menu_index, len(items) - 1)]
         buffer = self.input.buffer
-        if kind == "file":
+        if kind == "picker":
+            self._close_picker()
+            self._enqueue(item.command)
+        elif kind == "command" and submit and item.picker:
+            self._open_picker(item.label[1:])
+        elif kind == "file":
             before = buffer.document.text_before_cursor
             start = before.rindex("@")
             after = buffer.text[buffer.cursor_position :]
@@ -312,6 +360,40 @@ class Tui:
         else:
             buffer.text = f"{item.label} "
             buffer.cursor_position = len(buffer.text)
+
+    def _placeholder(self) -> str:
+        if self._picker is not None:
+            return t("Type to filter…")
+        return t("Describe what you want to do…")
+
+    def _open_picker(self, name: str) -> None:
+        """Show the choices of a command (models, sessions, languages)."""
+        picker: dict[str, Any] = {"name": name, "title": "", "choices": [], "loading": True}
+        self._picker = picker
+        self.input.buffer.reset()
+        self._menu_index = 0
+
+        async def load() -> None:
+            result = await picker_choices(self.session, name)
+            if self._picker is not picker:
+                return  # closed, or replaced by another picker, while loading
+            if result is None or not result[1]:
+                # Nothing to choose from: let the command itself explain why.
+                self._close_picker()
+                self._enqueue(f"/{name}")
+                return
+            picker["title"], picker["choices"] = result
+            picker["loading"] = False
+            current = next((i for i, c in enumerate(result[1]) if c.current), 0)
+            self._menu_index = current
+            self.app.invalidate()
+
+        picker["task"] = asyncio.ensure_future(load())
+
+    def _close_picker(self) -> None:
+        self._picker = None
+        self.input.buffer.reset()
+        self._menu_index = 0
 
     # ----------------------------------------------------------------- output
 
@@ -366,7 +448,7 @@ class Tui:
             return
         name, args = call["name"], call["args"]
         if output is None:
-            body: RenderableType = Text("  ⎿  已中断", style="red")
+            body: RenderableType = Text("  ⎿  " + t("Interrupted"), style="red")
             status = "error"
         else:
             body = render_output(name, args, output)
@@ -413,20 +495,21 @@ class Tui:
     def compaction(self, stage: str, before: int = 0, after: int = 0) -> None:
         if stage == "start":
             self._compacting = True
-            self._verb = "整理记忆，压缩上下文"
+            self._verb = t("Tidying memories, compacting context")
         else:
             self._compacting = False
             self._verb = petlib.verb("thinking")
         if stage == "done":
             self.emit(
                 Text(
-                    f"  ✻ 已压缩上下文：约 {format_tokens(before)} → {format_tokens(after)} tokens",
+                    "  ✻ "
+                    + t(COMPACTED, before=format_tokens(before), after=format_tokens(after)),
                     style="dim",
                 ),
                 gap=True,
             )
         elif stage == "failed":
-            self.emit(Text("  ✻ 压缩上下文失败，继续使用完整上下文", style="yellow"), gap=True)
+            self.emit(Text("  ✻ " + t(COMPACTION_FAILED), style="yellow"), gap=True)
         self.app.invalidate()
 
     def tool_progress(self, call_id: str, text: str) -> None:
@@ -437,7 +520,7 @@ class Tui:
     def show_history(self, items: list[Any]) -> None:
         for entry in render_history(items):
             self.emit(entry, gap=True)
-        self.emit(Text("  ✻ 已恢复会话，可以接着说", style="dim"), gap=True)
+        self.emit(Text("  ✻ " + t("Session resumed — carry on"), style="dim"), gap=True)
 
     async def approve(self, item: ToolApprovalItem) -> str:
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
@@ -466,15 +549,15 @@ class Tui:
         if self._turn_tools or elapsed >= SUMMARY_MIN_SECONDS:
             parts = [format_duration(elapsed)]
             if self._turn_tools:
-                parts.append(f"{self._turn_tools} 次工具调用")
+                parts.append(t("{count} tool calls", count=self._turn_tools))
             if input_tokens or output_tokens:
                 parts.append(f"↑ {format_tokens(input_tokens)} ↓ {format_tokens(output_tokens)}")
             mark = "✓" if self.pet.hidden else petlib.face("happy")
-            self.emit(Text(f"  {mark} 完成 · {' · '.join(parts)}", style="dim"), gap=True)
+            self.emit(Text(f"  {mark} {t('Done')} · {' · '.join(parts)}", style="dim"), gap=True)
         if levelled_up and not self.pet.hidden:
             self.emit(
                 Text(
-                    f"  {petlib.face('happy')} {self.pet.name} 升级了！"
+                    f"  {petlib.face('happy')} {t('{name} levelled up!', name=self.pet.name)} "
                     f"Lv.{self.pet.level} {self.pet.title}",
                     style=f"bold {ACCENT}",
                 )
@@ -491,7 +574,7 @@ class Tui:
 
     def _build_layout(self) -> HSplit:
         approving = Condition(lambda: self._approval is not None)
-        menu_open = Condition(lambda: bool(self._menu()))
+        menu_open = Condition(lambda: bool(self._menu()) or self._picker is not None)
         helping = Condition(lambda: self._show_help)
         rule = lambda: Window(height=1, char="─", style=self._rule_style)  # noqa: E731
 
@@ -575,10 +658,10 @@ class Tui:
         details = [format_duration(now - self._turn_started)]
         if self._turn_output_tokens:
             details.append(f"↓ {format_tokens(self._turn_output_tokens)} tokens")
-        details.append("esc 中断")
+        details.append(t("esc to interrupt"))
         return [
             ("", "\n"),
-            ("class:status", f"{mark} {self._verb or '思考中'}… "),
+            ("class:status", f"{mark} {self._verb or t('Thinking')}… "),
             ("class:dim", f"({' · '.join(details)})"),
         ]
 
@@ -593,13 +676,13 @@ class Tui:
 
     def _footer_text(self) -> StyleAndTextTuples:
         if time.monotonic() - self._exit_armed_at < EXIT_CONFIRM_SECONDS:
-            return [("class:footer.notice", "  再按一次 Ctrl-C 退出")]
+            return [("class:footer.notice", "  " + t("Press Ctrl-C again to quit"))]
         if self.session.context.auto_approve:
             return [
-                ("class:footer.auto", "  ⏵⏵ 自动批准"),
-                ("class:footer", " · shift+tab 关闭"),
+                ("class:footer.auto", "  ⏵⏵ " + t("auto-approve")),
+                ("class:footer", " · " + t("shift+tab to turn off")),
             ]
-        return [("class:footer", "  ? 快捷键 · / 命令 · @ 文件")]
+        return [("class:footer", "  " + t("? shortcuts · / commands · @ files"))]
 
     def _footer_right_text(self) -> StyleAndTextTuples:
         session = self.session
@@ -608,7 +691,7 @@ class Tui:
             share = session.context_share
             style = "class:footer.notice" if share >= COMPACT_AT else "class:footer"
             out.append(("class:footer", " · "))
-            out.append((style, f"上下文 {format_tokens(session.context_tokens)} ({share:.0%})"))
+            out.append((style, f"{t('context')} {format_tokens(session.context_tokens)} ({share:.0%})"))
         if self._branch:
             out.append(("class:footer", f" · ⎇ {self._branch}"))
         out.append(("", "  "))
@@ -619,27 +702,52 @@ class Tui:
         half = (len(SHORTCUTS) + 1) // 2
         for left, right in zip(SHORTCUTS[:half], [*SHORTCUTS[half:], ("", "")]):
             for key, description in (left, right):
+                description = t(description) if description else ""
                 out.append(("class:help.key", f"  {key:<10}"))
-                out.append(("class:dim", f" {description}".ljust(22 - len(description))))
+                out.append(("class:dim", f" {description}" + " " * max(26 - cell_len(description), 1)))
             out.append(("", "\n"))
         out.pop()
         return out
 
     def _menu_text(self) -> StyleAndTextTuples:
-        items = self._menu()
+        kind, items = self._menu_state()
+        picker = self._picker
+        out: StyleAndTextTuples = []
+        if picker is not None:
+            title = t("Loading…") if picker["loading"] else picker["title"]
+            out.append(("class:menu.title", f"   {title}\n"))
+            if not items and not picker["loading"]:
+                custom = picker["name"] == "model" and self.input.text.strip()
+                note = t("No match — press Enter to use this name") if custom else t("No match")
+                out.append(("class:dim", f"   {note}\n"))
         index = min(self._menu_index, len(items) - 1)
         start = max(0, min(index - MENU_ROWS + 1, len(items) - MENU_ROWS))
-        width = min(max(len(item.label) for item in items) + 2, 48)
-        out: StyleAndTextTuples = []
+        columns = self._columns()
+        width = min(max((cell_len(f"{i.label} {i.hint}") for i in items), default=0) + 2, 44)
         for position, item in enumerate(items[start : start + MENU_ROWS], start):
             selected = position == index
-            style = "class:menu.selected" if selected else "class:menu"
-            description = item.description.splitlines()[0][:60] if item.description else ""
-            mark = "❯" if selected else " "
-            out.append((style, f" {mark} {item.label.ljust(width)}{description}\n"))
-        if len(items) > MENU_ROWS:
-            out.append(("class:dim", f"   {index + 1}/{len(items)}\n"))
-        out[-1] = (out[-1][0], out[-1][1].rstrip("\n"))
+            style = "class:menu.selected" if selected else ""
+            mark = "✓" if item.current else " "
+            label = item.label if cell_len(item.label) < width else item.label[: width - 2] + "…"
+            padding = " " * max(width - cell_len(f"{label} {item.hint}".rstrip()), 1)
+            room = max(columns - width - 8 - cell_len(item.tag), 10)
+            description = item.description.splitlines()[0] if item.description else ""
+            if cell_len(description) > room:
+                description = description[: max(room // 2, 8)] + "…"
+            out.append((style, f" {'❯' if selected else ' '} "))
+            out.append(("class:menu.current", mark) if item.current else ("", mark))
+            out.append((style, f" {label}"))
+            out.append(("class:dim", f" {item.hint}" if item.hint else ""))
+            out.append(("class:menu.selected" if selected else "class:menu", f"{padding}{description}"))
+            out.append(("class:dim", f"  {item.tag}\n" if item.tag else "\n"))
+        position = f"{index + 1}/{len(items)} · " if len(items) > MENU_ROWS else ""
+        if kind == "picker" or picker is not None:
+            hint = t("↑↓ select · enter confirm · esc cancel · type to filter")
+        elif kind == "file":
+            hint = t("↑↓ select · tab/enter insert · esc close")
+        else:
+            hint = t("↑↓ select · tab complete · enter run · esc close")
+        out.append(("class:dim", f"   {position}{hint}"))
         return out
 
     def _approval_text(self) -> StyleAndTextTuples:
@@ -649,24 +757,24 @@ class Tui:
         item: ToolApprovalItem = approval["item"]
         name = item.tool_name or "tool"
         options = [
-            "是",
-            f"是，本次会话不再询问 {tool_label(name)}",
-            "否，让 agent 换个做法 (esc)",
+            t("Yes"),
+            t("Yes, and don't ask again for {tool} this session", tool=tool_label(name)),
+            t("No, tell the agent to do it differently (esc)"),
         ]
         out: StyleAndTextTuples = [
             ("", "\n"),
             ("class:approval.title", "─" * self._columns() + "\n"),
-            ("class:approval.title", f" 需要确认 · {tool_label(name)}\n"),
+            ("class:approval.title", f" {t('Approval needed')} · {tool_label(name)}\n"),
             ("", f"   {call_title(name, parse_args(item.arguments))}\n"),
             *approval["preview"],
             ("", "\n\n" if approval["preview"] else "\n"),
-            ("", " 是否允许执行？\n"),
+            ("", f" {t('Allow this?')}\n"),
         ]
         for index, label in enumerate(options):
             selected = index == approval["index"]
             style = "class:approval.selected" if selected else ""
             out.append((style, f" {'❯' if selected else ' '} {index + 1}. {label}\n"))
-        out.append(("class:dim", " ↑↓ 选择 · enter 确认 · shift+tab 全部自动批准"))
+        out.append(("class:dim", " " + t("↑↓ select · enter confirm · shift+tab approve everything")))
         return out
 
     # ------------------------------------------------------------ key bindings
@@ -675,7 +783,8 @@ class Tui:
         kb = KeyBindings()
         approving = Condition(lambda: self._approval is not None)
         menu_open = Condition(lambda: bool(self._menu()))
-        empty = Condition(lambda: not self.input.text)
+        picking = Condition(lambda: self._picker is not None)
+        empty = Condition(lambda: not self.input.text and self._picker is None)
 
         def answer(index: int) -> None:
             approval = self._approval
@@ -732,10 +841,27 @@ class Tui:
         @kb.add("escape", filter=menu_open & ~approving)
         def _(event: KeyPressEvent) -> None:
             buffer = self.input.buffer
-            self._menu_dismissed = (buffer.text, buffer.cursor_position)
+            self._menu_dismissed = (buffer.text, buffer.cursor_position, id(None), 0)
+
+        # --- picker: owns Enter and Esc even when the filter matches nothing
+        @kb.add("enter", filter=picking & ~menu_open)
+        def _(event: KeyPressEvent) -> None:
+            picker, text = self._picker, self.input.text.strip()
+            if picker is not None and picker["name"] == "model" and text and not picker["loading"]:
+                self._close_picker()
+                self._enqueue(f"/model {text}")  # a model that is not in the list
+
+        @kb.add("escape", filter=picking & ~approving)
+        def _(event: KeyPressEvent) -> None:
+            self._close_picker()
+
+        @kb.add("up", filter=picking & ~menu_open)
+        @kb.add("down", filter=picking & ~menu_open)
+        def _(event: KeyPressEvent) -> None:
+            pass  # nothing to move through; do not fall back to input history
 
         # --- input
-        @kb.add("enter", filter=~approving & ~menu_open)
+        @kb.add("enter", filter=~approving & ~menu_open & ~picking)
         def _(event: KeyPressEvent) -> None:
             self._submit()
 
@@ -744,7 +870,7 @@ class Tui:
         def _(event: KeyPressEvent) -> None:
             self.input.buffer.insert_text("\n")
 
-        @kb.add("escape", filter=~approving & ~menu_open)
+        @kb.add("escape", filter=~approving & ~menu_open & ~picking)
         def _(event: KeyPressEvent) -> None:
             if self._show_help:
                 self._show_help = False
@@ -768,7 +894,9 @@ class Tui:
 
         @kb.add("c-c")
         def _(event: KeyPressEvent) -> None:
-            if self.busy:
+            if self._picker is not None:
+                self._close_picker()
+            elif self.busy:
                 self._interrupt()
             elif self.input.text:
                 self.input.buffer.reset()
@@ -789,6 +917,9 @@ class Tui:
             return
         self.input.buffer.append_to_history()
         self.input.buffer.reset()
+        self._enqueue(text)
+
+    def _enqueue(self, text: str) -> None:
         self._queue.append(text)
         self._wakeup.set()
 
@@ -808,20 +939,20 @@ class Tui:
         facts = Table.grid(padding=(0, 2))
         facts.add_column(style="dim", no_wrap=True)
         facts.add_column(overflow="fold")
-        facts.add_row("模型", session.model_name)
-        if "接口" in session.info:
-            facts.add_row("接口", session.info["接口"])
-        facts.add_row("工作区", workspace)
-        facts.add_row("扩展", f"{len(context.skills)} 个 skill · {len(session.mcp_servers)} 个 MCP 服务器")
+        facts.add_row(t("Model"), session.model_name)
+        if "Endpoint" in session.info:
+            facts.add_row(t("Endpoint"), session.info["Endpoint"])
+        facts.add_row(t("Workspace"), workspace)
+        facts.add_row(t("Extensions"), extensions_summary(session))
 
         body = Table.grid(padding=(0, 3))
         if not self.pet.hidden:
             cat = Text("\n".join(petlib.art("happy")), style=ACCENT)
             cat.append(f"\n{self.pet.name} Lv.{self.pet.level}", style=f"bold {ACCENT}")
-            body.add_row(cat, Group(Text(TAGLINE, style="bold"), Text(), facts))
+            body.add_row(cat, Group(Text(t(TAGLINE), style="bold"), Text(), facts))
         else:
-            body.add_row(Group(Text(TAGLINE, style="bold"), Text(), facts))
-        tips = Text("输入任务开始 · / 命令 · @ 引用文件 · ? 快捷键", style="dim")
+            body.add_row(Group(Text(t(TAGLINE), style="bold"), Text(), facts))
+        tips = Text(t("Type a task to begin · / commands · @ files · ? shortcuts"), style="dim")
         return Panel(
             Group(body, Text(), tips),
             title=f"[bold {ACCENT}]{APP_NAME}[/] [dim]v{__version__}[/]",
@@ -835,12 +966,12 @@ class Tui:
         session = self.session
         text = Text(style="dim")
         text.append("" if self.pet.hidden else f"{petlib.face('sleeping')} ")
-        text.append(f"{self.pet.name} 打了个哈欠，下次见。")
+        text.append(t("{name} yawns. See you next time.", name=self.pet.name))
         if session.history and session.store is not None:
-            text.append(f" 恢复本次会话：{COMMAND} --resume {session.session_id}")
+            text.append(" " + t("Resume this session: {command}", command=f"{COMMAND} --resume {session.session_id}"))
         if session.input_tokens or session.output_tokens:
             text.append(
-                f" 本次用量 ↑ {format_tokens(session.input_tokens)}"
+                f" {t('Usage')} ↑ {format_tokens(session.input_tokens)}"
                 f" ↓ {format_tokens(session.output_tokens)} tokens"
             )
         return text
@@ -862,18 +993,18 @@ class Tui:
                 await asyncio.gather(self._turn, return_exceptions=True)
                 raise
             if not self._calls:
-                self.emit(Text("  ⎿  已中断", style="red"))
+                self.emit(Text("  ⎿  " + t("Interrupted"), style="red"))
         except MaxTurnsExceeded:
             self.emit(
                 Text(
-                    f"  ⎿  已达到单次任务的最大轮数 ({self.session.max_turns})，任务未完成。\n"
-                    '     已完成的步骤保留在上下文中，输入"继续"可接着执行。\n'
-                    "     可用 --max-turns 或配置文件的 max_turns 调大上限。",
+                    f"  ⎿  {t(MAX_TURNS_REACHED, limit=self.session.max_turns)}\n"
+                    f"     {t(MAX_TURNS_HINT)}",
                     style="red",
                 )
             )
         except (AgentsException, OpenAIError) as exc:
-            self.emit(Text(f"  ⎿  出错: {type(exc).__name__}: {exc}", style="red"))
+            error = f"{type(exc).__name__}: {exc}"
+            self.emit(Text("  ⎿  " + t("Error: {error}", error=error), style="red"))
         finally:
             for call_id in list(self._calls):
                 self._finish_call(call_id, None)

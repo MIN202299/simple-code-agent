@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from nori import pet as petlib
+from nori.i18n import set_language
 from nori.branding import app_dir, migrate_legacy_dir
 from nori.pet import Pet, load_pet
 
@@ -20,9 +21,12 @@ def test_moods_look_different():
     assert petlib.eyes("idle", 1.0) == "o.o" and petlib.eyes("idle", 4.05) == "-.-"  # blink
     assert {petlib.eyes("thinking", t) for t in (0.0, 0.7)} == {"o.O", "O.o"}
     assert petlib.bubble("waiting", 0) == "!" and petlib.bubble("idle", 0) == " "
+    set_language("en")
     assert petlib.verb("working", "run_shell") in petlib.TOOL_VERBS["run_shell"]
     assert petlib.verb("working", "some_mcp_tool") in petlib.DEFAULT_TOOL_VERBS
     assert petlib.verb("thinking") in petlib.THINKING_VERBS
+    set_language("zh")
+    assert petlib.verb("working", "list_dir") == "巡视目录"
 
 
 def test_levels_and_persistence(tmp_path):

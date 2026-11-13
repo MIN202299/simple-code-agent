@@ -281,7 +281,10 @@ def test_commands_and_completion(tmp_path):
         return asyncio.run(run_command(session, line, lines.append))
 
     assert [c.name for c in match_commands(session, "/")][-1] == "review"
-    assert [c.name for c in match_commands(session, "/m")] == ["model", "mcp"]
+    # prefix matches first, then names merely containing the letters
+    assert [c.name for c in match_commands(session, "/m")] == ["model", "mcp", "compact", "resume"]
+    assert [c.name for c in match_commands(session, "/cmp")] == ["compact"]  # fuzzy
+    assert match_commands(session, "/zzz") == []
     assert match_commands(session, "/model x") == [] and match_commands(session, "hi") == []
 
     assert run("/exit").exit
@@ -291,7 +294,7 @@ def test_commands_and_completion(tmp_path):
     run("/yes")
     assert session.context.auto_approve is True
     run("/model other")
-    assert session.model_name == "other" and "other" in lines[-1]
+    assert session.model_name == "other" and "模型已切换为 other" in lines[-2]
     assert "Do the review." in run("/review auth.py").prompt
     run("/nope")
     assert "未知命令" in lines[-1]

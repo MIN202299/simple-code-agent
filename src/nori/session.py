@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -24,6 +24,7 @@ from .compact import (
     summarise,
     summary_item,
 )
+from .i18n import t
 from .pet import Pet
 from .render import call_title, parse_args, render_call, render_output
 from .skills import Skill
@@ -31,6 +32,8 @@ from .store import TITLE_CHARS, SessionRecord, SessionStore, new_session_id
 from .tools import AgentContext
 
 INTERRUPT_NOTE = "[Request interrupted by user]"
+COMPACTED = "Compacted context: about {before} → {after} tokens"
+COMPACTION_FAILED = "Compacting the context failed; continuing with the full context."
 SUBAGENT_MAX_TURNS = 100
 REJECTION_MESSAGE = "The user rejected this tool call."
 
@@ -101,16 +104,17 @@ class PlainUI:
 
     def compaction(self, stage: str, before: int = 0, after: int = 0) -> None:
         if stage == "done":
-            self.console.print(f"[dim]已压缩上下文：约 {before:,} → {after:,} tokens[/dim]")
+            message = t(COMPACTED, before=f"{before:,}", after=f"{after:,}")
+            self.console.print(f"[dim]{message}[/dim]")
         elif stage == "failed":
-            self.console.print("[yellow]压缩上下文失败，继续使用完整上下文。[/yellow]")
+            self.console.print(f"[yellow]{t(COMPACTION_FAILED)}[/yellow]")
 
     def tool_progress(self, call_id: str, text: str) -> None:
         self.console.print(f"  [dim]│ {escape(text)}[/dim]", highlight=False)
 
     def show_history(self, items: list[Any]) -> None:
         turns = sum(1 for item in items if isinstance(item, dict) and item.get("role") == "user")
-        self.console.print(f"[dim]已恢复会话（{turns} 轮对话）。[/dim]")
+        self.console.print(f"[dim]{t('Session resumed ({turns} turns).', turns=turns)}[/dim]")
 
     async def approve(self, item: ToolApprovalItem) -> str:
         return self.approver(item)
@@ -120,9 +124,9 @@ class PlainUI:
 
     def _ask(self, item: ToolApprovalItem) -> str:
         name = escape(item.tool_name or "tool")
-        self.console.print(f"\n[bold yellow]需要确认[/bold yellow] {name}")
+        self.console.print(f"\n[bold yellow]{t('Approval needed')}[/bold yellow] {name}")
         try:
-            answer = input("允许执行？ [y] 是 / [a] 本次会话总是允许该工具 / [n] 否: ")
+            answer = input(t("Allow? [y] yes / [a] always allow this tool in this session / [n] no: "))
         except (EOFError, KeyboardInterrupt):
             self.console.print()
             return "no"
@@ -194,6 +198,8 @@ class Session:
         self.output_tokens = 0
         self.context_tokens = 0  # size of the conversation as last seen by the model
         self.context_window = context_window
+        # The window for models without one of their own; set by the CLI and /context.
+        self.default_context_window = context_window
         self.auto_compact = auto_compact
         # During a turn: how many leading items of the run's input have been replaced
         # by a summary, and that summary. The SDK keeps the full list; we swap the
@@ -203,7 +209,11 @@ class Session:
         self._usage_reported = False
         self.info: dict[str, str] = {}  # endpoint details shown by /status
         self.pet: Pet | None = None
-        self.config_path: Path | None = None  # where /context saves its setting
+        self.config_path: Path | None = None  # where commands save settings
+        # Models offered by /model: configured ones, plus whatever the endpoint lists.
+        self.models: list[dict[str, Any]] = []
+        self.fetch_models: Callable[[], Awaitable[list[str]]] | None = None
+        self._fetched_models: list[str] | None = None
 
     def _build_agent(self) -> Agent[AgentContext]:
         return build_agent(
@@ -214,11 +224,27 @@ class Session:
     def model_name(self) -> str:
         if isinstance(self.model, str):
             return self.model
-        return "(SDK 默认)" if self.model is None else type(self.model).__name__
+        return t("(SDK default)") if self.model is None else type(self.model).__name__
 
     def set_model(self, model: str) -> None:
+        """Switch models; a context window configured for the model comes with it."""
         self.model = model
         self.agent = self._build_agent()
+        own = next((m.get("context_window") for m in self.models if m.get("name") == model), None)
+        self.context_window = own or self.default_context_window
+
+    async def available_models(self) -> list[str]:
+        """Configured models first, then the ones the endpoint reports (fetched once)."""
+        if self._fetched_models is None and self.fetch_models is not None:
+            try:
+                self._fetched_models = sorted(await self.fetch_models())
+            except Exception:  # listing models is optional; many endpoints lack it
+                self._fetched_models = []
+        names = [entry["name"] for entry in self.models]
+        if isinstance(self.model, str):
+            names.append(self.model)
+        names.extend(self._fetched_models or [])
+        return list(dict.fromkeys(names))
 
     def clear(self) -> None:
         """Start a new conversation. The old one stays on disk and can be resumed."""
@@ -311,7 +337,9 @@ class Session:
                         name = getattr(raw, "name", None) or "tool"
                         title = call_title(name, parse_args(getattr(raw, "arguments", None)))
                         tool_calls += 1
-                        self.ui.tool_progress(call_id, f"{title} · 第 {tool_calls} 次工具调用")
+                        self.ui.tool_progress(
+                            call_id, f"{title} · " + t("tool call #{count}", count=tool_calls)
+                        )
                 if not result.interruptions:
                     break
                 run_input = await self._decide(result)

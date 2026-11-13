@@ -18,6 +18,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .branding import ACCENT
+from .i18n import t
 
 BULLET = "●"
 PROMPT_MARK = "❯"
@@ -100,7 +101,7 @@ def _detail(lines: list[Text], hidden: int) -> Text:
         out.append_text(line)
         out.append("\n")
     if hidden:
-        out.append(f"     … +{hidden} 行\n", style="dim")
+        out.append("     … " + t("+{count} lines", count=hidden) + "\n", style="dim")
     out.rstrip()
     return out
 
@@ -175,7 +176,7 @@ def _result(lines: list[Text], hidden: int = 0) -> Text:
         out.append_text(line)
         out.append("\n")
     if hidden:
-        out.append(f"     … +{hidden} 行\n", style="dim")
+        out.append("     … " + t("+{count} lines", count=hidden) + "\n", style="dim")
     out.rstrip()
     return out
 
@@ -289,9 +290,9 @@ def render_history(items: list[Any], limit: int = 30) -> list[RenderableType]:
         elif role == "user":
             text = _message_text(item.get("content"))
             if text.startswith("[The earlier part of this conversation was compacted"):
-                entries.append(Text("  ✻ 更早的对话已压缩为摘要", style="dim"))
+                entries.append(Text("  ✻ " + t("Earlier conversation was compacted into a summary"), style="dim"))
             elif text.startswith("[Request interrupted"):
-                entries.append(Text("  ⎿  已中断", style="red"))
+                entries.append(Text("  ⎿  " + t("Interrupted"), style="red"))
             elif text:
                 entries.append(render_user(text))
         elif role == "assistant":
@@ -300,7 +301,7 @@ def render_history(items: list[Any], limit: int = 30) -> list[RenderableType]:
                 entries.append(render_assistant(text))
     hidden = len(entries) - limit
     if hidden > 0:
-        entries = [Text(f"  … 省略了更早的 {hidden} 条记录", style="dim"), *entries[-limit:]]
+        entries = [Text("  … " + t("{count} earlier entries hidden", count=hidden), style="dim"), *entries[-limit:]]
     return entries
 
 

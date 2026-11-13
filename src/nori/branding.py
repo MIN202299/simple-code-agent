@@ -7,7 +7,7 @@ from pathlib import Path
 
 APP_NAME = "Nori"
 COMMAND = "nori"
-TAGLINE = "终端里的 AI 编程搭档"
+TAGLINE = "Your AI pair programmer in the terminal"  # translated with i18n.t
 ACCENT = "#5fd7af"  # brand colour, used for the pet and highlights
 
 APP_DIR_NAME = ".nori"

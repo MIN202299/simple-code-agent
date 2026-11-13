@@ -59,6 +59,8 @@ nori --setup        # 填写 base url、api key、模型
 | `max_turns` | 单个任务的最大模型轮数（每次模型回复算一轮）。TUI 里默认不限；一次性执行和简单模式默认 200 |
 | `context_window` | 模型的上下文窗口大小（token 数），默认 128000。按你所用模型的实际值填写 |
 | `auto_compact` | 上下文快满时是否自动压缩会话，默认 `true` |
+| `language` | 界面语言：`en`（默认）或 `zh` |
+| `models` | `/model` 面板里列出的模型。每项是模型名，或 `{"name": ..., "context_window": ...}` 为该模型单独指定窗口大小 |
 
 - `nori --setup` 会交互式地创建或修改这个文件（Key 输入不回显，文件权限为 600）。
 - 没有配置 Key 时，首次启动会自动进入这个向导。
@@ -102,6 +104,7 @@ nori -m other-model -y        # 临时换模型，并自动批准所有操作
 | `--max-turns` | 单个任务的最大模型轮数。TUI 默认不限；一次性执行和简单模式默认 200 |
 | `--context-window TOKENS` | 模型的上下文窗口大小，如 `200k`，默认 128000 |
 | `--no-auto-compact` | 上下文快满时不自动压缩会话 |
+| `--lang LANG` | 界面语言：`en` 或 `zh` |
 
 标准输入或输出不是终端时（例如管道），自动使用简单模式。
 
@@ -154,7 +157,7 @@ nori -m other-model -y        # 临时换模型，并自动批准所有操作
 | `Enter` | 发送 |
 | `Alt+Enter` / `Ctrl-J` | 换行 |
 | `Esc` | 中断正在执行的任务；关闭菜单 |
-| `/` | 命令菜单，`Tab` 补全，`Enter` 执行 |
+| `/` | 命令面板：支持模糊匹配（`/cmp` 能找到 `/compact`），`Tab` 补全，`Enter` 执行 |
 | `@` | 文件菜单，按路径模糊匹配，`Tab` / `Enter` 插入 |
 | `?` | 输入框为空时显示快捷键 |
 | `↑` / `↓` | 历史输入；在菜单和审批对话框中移动选择 |
@@ -172,7 +175,8 @@ nori -m other-model -y        # 临时换模型，并自动批准所有操作
 | `/resume [序号]` | 列出这个工作区之前的会话；带序号则恢复那一个 |
 | `/context [大小]` | 查看或设置模型的上下文窗口大小，如 `/context 200k` |
 | `/compact [说明]` | 把对话压缩成摘要以释放上下文，可附带要重点保留什么 |
-| `/model [name]` | 查看或切换模型（仅本次会话） |
+| `/model [name]` | 切换模型：不带参数打开模型选择面板，带名称则直接切换；选择会保存为默认模型 |
+| `/lang [en\|zh]` | 切换界面语言：不带参数打开选择面板；立即生效并保存 |
 | `/status` | 查看模型、接口、上下文大小和累计用量 |
 | `/yes` | 开关自动批准 |
 | `/skills` | 列出可用的 skill |
@@ -212,6 +216,51 @@ nori -c "接着把测试补完"    # 一次性执行时同样可用
 - 子 agent 改文件、跑命令同样需要你确认，对话框里会附带 diff。
 - 子 agent 看不到主对话，也不能再派生子 agent；单个子 agent 最多 100 轮，且没有自动压缩。
 - 什么时候用由模型自己判断，你也可以直接说"用子 agent 去查一下……"。
+
+## 界面语言
+
+界面支持英文和中文，**默认英文**。切换方式（优先级从高到低）：
+
+- 启动参数：`nori --lang zh`
+- 环境变量：`NORI_LANG=zh`
+- 配置文件：`"language": "zh"`
+- 界面里输入 `/lang` 选择，或直接 `/lang zh`——立即生效并写入配置文件
+
+这只影响 Nori 自己的界面文字（菜单、提示、帮助）。模型用什么语言回答取决于你用什么语言提问。
+
+## 切换模型
+
+输入 `/model` 打开模型选择面板：
+
+```
+   Select a model
+ ❯ ✓ deepseek-chat
+     claude-like-200k   200k context
+     glm-4-plus
+     qwen-max
+   ↑↓ select · enter confirm · esc cancel · type to filter
+```
+
+- 列表来自两处：配置文件里的 `models`，以及接口的模型列表（`GET /models`，接口不支持时自动忽略）。
+- 直接打字可以筛选；输入一个列表里没有的名字再按 `Enter`，就使用这个名字。
+- 也可以不开面板，直接 `/model <名称>`。
+- 选择会写入配置文件，成为下次启动的默认模型；用 `nori -m <名称>` 则只对这一次有效。
+- 切换模型不会清空对话，新模型接着当前上下文继续。
+
+不同模型的上下文窗口不一样时，可以在配置里分别指定，切换模型时窗口大小跟着变：
+
+```json
+{
+  "model": "deepseek-chat",
+  "context_window": 128000,
+  "models": [
+    "deepseek-chat",
+    { "name": "claude-like-200k", "context_window": 200000 }
+  ]
+}
+```
+
+没有单独指定窗口的模型使用顶层的 `context_window`。`/resume` 和 `/lang` 不带参数时同样会打开选择面板。
 
 ## 上下文管理
 
@@ -317,6 +366,7 @@ description: 按团队清单做代码审查。当用户要求 review 代码时�
 | `NORI_CONFIG` | 配置文件路径 |
 | `NORI_MODEL` | 模型名，覆盖配置文件 |
 | `NORI_API` | `responses` 或 `chat`，覆盖配置文件 |
+| `NORI_LANG` | 界面语言 `en` 或 `zh`，覆盖配置文件 |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | 配置文件里没有对应项时使用 |
 | `NORI_TRACING` | 设为 `1` 时开启 SDK 的 tracing（会把运行数据上传到 OpenAI，默认关闭） |
 
@@ -353,7 +403,8 @@ src/nori/
   session.py     # 对话与运行循环、审批流程、中断处理
   compact.py     # 会话压缩：切分位置、摘要生成
   store.py       # 会话存盘与恢复
-  commands.py    # 斜杠命令
+  commands.py    # 斜杠命令与选择面板的数据
+  i18n.py        # 界面语言：英文为键，附中文词条表
   config.py      # 配置文件与设置向导
   branding.py    # 应用名、主题色、用户目录
   tools.py       # 工具实现与审批策略
