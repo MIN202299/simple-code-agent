@@ -2,18 +2,18 @@
 class Nori < Formula
   desc "AI coding agent for the terminal"
   homepage "https://github.com/MIN202299/simple-code-agent"
-  version "0.0.1-beta-2"
+  version "0.0.1-beta-3"
 
   on_macos do
     depends_on arch: :arm64
-    url "https://github.com/MIN202299/simple-code-agent/releases/download/v0.0.1-beta-2/nori-macos-arm64.tar.gz"
-    sha256 "3b6452d144dbb64d1380a024916e3ed78a44daaed3868d8336f9f8435332bab7"
+    url "https://github.com/MIN202299/simple-code-agent/releases/download/v0.0.1-beta-3/nori-macos-arm64.tar.gz"
+    sha256 "5a37390520f27bb22bea98ff1ce53b190088b0fd35d234ef2dec3be738e37603"
   end
 
   on_linux do
     depends_on arch: :x86_64
-    url "https://github.com/MIN202299/simple-code-agent/releases/download/v0.0.1-beta-2/nori-linux-x86_64.tar.gz"
-    sha256 "aca394b9407bbad758b4d7617564bb006d4a39e539bb393b08106f57e9a7fdcc"
+    url "https://github.com/MIN202299/simple-code-agent/releases/download/v0.0.1-beta-3/nori-linux-x86_64.tar.gz"
+    sha256 "58246312030c8953f2315523ade6814d5ab5fca9c922b4092fc02c5fe4181d00"
   end
 
   def install
