@@ -1,0 +1,23 @@
+name: Homebrew check
+
+# Installs the current formula the way a user would. Run it by hand to check an
+# existing release without publishing again.
+on:
+  workflow_dispatch:
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Set up Homebrew on Linux
+        if: runner.os == 'Linux'
+        run: echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
+      - name: Install with Homebrew
+        run: |
+          brew tap min202299/tap "https://github.com/${{ github.repository }}"
+          brew install min202299/tap/nori
+          nori --version

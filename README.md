@@ -37,7 +37,7 @@ Nori is a coding agent for the terminal, built on the [OpenAI Agents SDK](https:
 
 ```bash
 brew tap min202299/tap https://github.com/MIN202299/simple-code-agent
-brew install nori
+brew install min202299/tap/nori
 ```
 
 **Download** — get the file for your system from [Releases](https://github.com/MIN202299/simple-code-agent/releases). No Python needed.

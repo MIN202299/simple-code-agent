@@ -37,7 +37,7 @@ Nori 是一个运行在终端里的 code agent，基于 [OpenAI Agents SDK](http
 
 ```bash
 brew tap min202299/tap https://github.com/MIN202299/simple-code-agent
-brew install nori
+brew install min202299/tap/nori
 ```
 
 **下载**：到 [Releases](https://github.com/MIN202299/simple-code-agent/releases) 页面下载对应系统的文件，不需要 Python。
